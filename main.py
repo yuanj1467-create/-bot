@@ -1,13 +1,19 @@
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 import os
 import json
 import random
 import re
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from cryptography.fernet import Fernet
 import aiohttp
+
+# ==================================================
+# ✅ タイムゾーン・チャンネル設定
+# ==================================================
+JST = timezone(timedelta(hours=9))
+RANKING_CHANNEL_ID = 1537850013290467379  # 🏆 ランキング公開チャンネル
 
 # ========== ✅ 設定 ==========
 ADMIN_ROLE_NAME = "TISN管理者"
@@ -54,6 +60,78 @@ intents.dm_messages = True
 intents.members = True
 
 bot = commands.Bot(command_prefix=COMMAND_PREFIX, intents=intents)
+
+
+# ==================================================
+# ✅ ランキング生成 共通関数
+# ==================================================
+async def build_ranking_embed():
+    now = datetime.now(JST)
+    DATA_FILE_PATH = Path("points_data.json")
+    if not DATA_FILE_PATH.exists():
+        return discord.Embed(title="🏆 TISNランキング", description="📭 データが存在しません。", color=0xFFD700)
+    
+    data = json.loads(DATA_FILE_PATH.read_text(encoding="utf-8"))
+    if not data:
+        return discord.Embed(title="🏆 TISNランキング", description="📭 まだデータがありません。", color=0xFFD700)
+
+    xp_ranking = sorted(data.items(), key=lambda x: x[1].get("xp", 0), reverse=True)[:10]
+    pt_ranking = sorted(data.items(), key=lambda x: x[1].get("points", 0), reverse=True)[:10]
+
+    xp_text = ""
+    for i, (uid, d) in enumerate(xp_ranking, 1):
+        try:
+            user = await bot.fetch_user(int(uid))
+            name = user.name if user else f"User{uid[:6]}"
+        except:
+            name = f"User{uid[:6]}"
+        xp_text += f"**{i}.** {name} → **{d.get('xp', 0)} XP**\n"
+
+    pt_text = ""
+    for i, (uid, d) in enumerate(pt_ranking, 1):
+        try:
+            user = await bot.fetch_user(int(uid))
+            name = user.name if user else f"User{uid[:6]}"
+        except:
+            name = f"User{uid[:6]}"
+        pt_text += f"**{i}.** {name} → **{d.get('points', 0)} PT**\n"
+
+    embed = discord.Embed(
+        title="🏆 TISN ランキング発表",
+        description=f"📅 {now.strftime('%Y/%m/%d %H:%M')} 現在\n✨ 上位10名を表示",
+        color=0xFFD700
+    )
+    embed.add_field(name="✨ XP ランキング TOP10", value=xp_text or "データなし", inline=False)
+    embed.add_field(name="💰 PT ランキング TOP10", value=pt_text or "データなし", inline=False)
+    embed.set_footer(text="毎日 0:00 に自動更新 | !ranking で再表示")
+    return embed
+
+
+# ==================================================
+# ✅ 手動ランキングコマンド
+# ==================================================
+@bot.command(name="ranking")
+async def show_ranking(ctx):
+    embed = await build_ranking_embed()
+    await ctx.send(embed=embed)
+
+
+# ==================================================
+# ✅ 毎日 0:00 自動ランキング（公開チャンネルへ）
+# ==================================================
+@tasks.loop(hours=24)
+async def daily_ranking_task():
+    now = datetime.now(JST)
+    if now.hour != 0:
+        return
+
+    ranking_channel = bot.get_channel(RANKING_CHANNEL_ID)
+    if not ranking_channel:
+        return
+
+    embed = await build_ranking_embed()
+    await ranking_channel.send(embed=embed)
+
 
 # ========== ✅ 暗号化キー管理 ==========
 def get_or_create_cipher():
@@ -136,38 +214,29 @@ async def get_user_current_tech_rank(guild, user_id):
             return rank
     return None
 
-# ✅ 【最新版】階級表示：上から高い順、下位は薄字、現在👈now、次👈next
+# ✅ 階級表示フォーマット
 def build_rank_progress(order, current_rank):
     lines = []
-    reversed_order = list(reversed(order))  # 高い順
+    reversed_order = list(reversed(order))
     
     if current_rank is None:
-        # 未取得：最下位がnext
         for idx, name in enumerate(reversed_order):
-            if idx == len(reversed_order) - 1:
-                lines.append(f"{name} 👈next")
-            else:
-                lines.append(f"{name}")
+            lines.append(f"{name} 👈next" if idx == len(reversed_order) - 1 else name)
         return "\n".join(lines)
     
     current_index = reversed_order.index(current_rank)
-    
     for idx, name in enumerate(reversed_order):
         if name == current_rank:
-            # 現在の階級
             lines.append(f"**{name} 👈now**")
         elif idx == current_index - 1:
-            # 一つ上 = 次の目標
             lines.append(f"{name} 👈next")
         elif idx > current_index:
-            # 下位階級：取消線で薄く表示
             lines.append(f"~~{name}~~")
         else:
-            # それより上位（まだ先）
             lines.append(f"{name}")
     return "\n".join(lines)
 
-# ========== ✅ Discord APIによるトークン実在確認 ==========
+# ========== ✅ トークン有効性確認 ==========
 async def verify_real_discord_token(token: str):
     token = token.strip()
     if not re.fullmatch(r"[A-Za-z0-9_\-]{24}\.[A-Za-z0-9_\-]{6}\.[A-Za-z0-9_\-]{27,}", token):
@@ -198,7 +267,7 @@ WARNING_MESSAGE = (
     "本アカウントのトークンを入力した場合の損害については一切責任を負いません。"
 )
 
-# ========== ✅ XP付与ボタン（管理者用） ==========
+# ========== ✅ XP付与ボタン ==========
 class XPGrantView(discord.ui.View):
     def __init__(self, req_id, target_user_id, link, desc, msg):
         super().__init__(timeout=None)
@@ -426,7 +495,7 @@ class MainPanelView(discord.ui.View):
             pass
 
 
-# ========== ✅ トークン出品：確認ボタン＋モーダル入力 ==========
+# ========== ✅ トークン出品フロー ==========
 class TokenSellConfirmView(discord.ui.View):
     def __init__(self, user_id: str):
         super().__init__(timeout=None)
@@ -502,7 +571,7 @@ class TokenSellInputModal(discord.ui.Modal, title="トークンを出品"):
             )
 
 
-# ========== ✅ 管理者用：コメント入力用モーダル ==========
+# ========== ✅ 承認/拒否モーダル ==========
 class ApproveModal(discord.ui.Modal, title="✅ 承認"):
     comment = discord.ui.TextInput(label="ユーザーへのメッセージ（任意）", style=discord.TextStyle.long, required=False)
 
@@ -582,7 +651,7 @@ class DenyModal(discord.ui.Modal, title="❌ 拒否"):
             pass
 
 
-# ========== ✅ 管理者用：承認/拒否ボタン ==========
+# ========== ✅ 承認/拒否ボタン ==========
 class ApproveDenyView(discord.ui.View):
     def __init__(self, request_id: str, points: int, target_user_id: str, image_url: str, user_comment: str = ""):
         super().__init__(timeout=None)
@@ -677,7 +746,7 @@ async def on_message(message: discord.Message):
         )
         return
 
-    # ⚡ XP申請（Botリンク＋説明＋任意メッセージ）
+    # ⚡ XP申請
     if state == "waiting_xp_request":
         lines = message.content.strip().splitlines()
         if len(lines) < 2 or not lines[0].strip() or not lines[1].strip():
@@ -728,7 +797,7 @@ async def on_message(message: discord.Message):
         )
         return
 
-    # 🏪 ロール購入 ✅ 通常階級(pt)・技術班階級(xp) 両方に対応
+    # 🏪 ロール購入
     if state == "waiting_role_purchase":
         role_name = message.content.strip()
 
@@ -754,10 +823,9 @@ async def on_message(message: discord.Message):
 
         guild = await bot.fetch_guild(int(guild_id))
         current_rank = await get_user_current_rank(guild, user_id) if is_normal else await get_user_current_tech_rank(guild, user_id)
-
         target_index = order.index(role_name)
 
-        # ✅ 下位階級所持チェック
+        # 下位階級チェック
         if target_index > 0:
             required_rank = order[target_index - 1]
             if current_rank != required_rank:
@@ -768,12 +836,12 @@ async def on_message(message: discord.Message):
                 )
                 return
 
-        # ✅ 既所持チェック
+        # 既所持チェック
         if current_rank == role_name:
             await message.author.send("⚠️ 既にこのロールを所持しています。")
             return
 
-        # ✅ 残高チェック
+        # 残高チェック
         balance = user_data.get("points", 0) if is_normal else user_data.get("xp", 0)
         if balance < price:
             await message.author.send(
@@ -782,7 +850,7 @@ async def on_message(message: discord.Message):
             )
             return
 
-        # ✅ 決済→ロール付与（失敗時は自動返金）
+        # 決済→ロール付与
         paid = False
         try:
             if is_normal:
@@ -815,7 +883,7 @@ async def on_message(message: discord.Message):
             )
             return
 
-        # ✅ 成功
+        # 成功
         user_data.setdefault("roles", []).append(role_name)
         data[user_id] = user_data
         save_json(DATA_FILE, data)
@@ -866,9 +934,11 @@ async def on_command_error(ctx, error):
 @bot.event
 async def on_ready():
     bot.add_view(MainPanelView())
+    if not daily_ranking_task.is_running():
+        daily_ranking_task.start()
     print(f"✅ Bot起動完了: {bot.user}")
     print(f"✅ 管理者ロール: {ADMIN_ROLE_NAME}")
-    print(f"✅ 通知チャンネル: {ADMIN_CHANNEL_ID}")
+    print(f"✅ ランキングch: {RANKING_CHANNEL_ID}")
     print(f"✅ 接頭辞: {COMMAND_PREFIX}")
 
 
