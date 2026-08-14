@@ -15,7 +15,7 @@ ADMIN_CHANNEL_ID = 1537497919966544086
 TOKEN_TRADE_PRICE = 250
 COMMAND_PREFIX = "!"
 
-# ✅ 通常階級：低い順 / 通貨：pt
+# ✅ 通常階級：低い順
 ROLE_ORDER = [
     "一等兵",
     "曹長",
@@ -31,7 +31,7 @@ ROLE_PRICES = {
     "TISN最高幹部": 100000
 }
 
-# ✅ 技術班階級：低い順 / 通貨：xp
+# ✅ 技術班階級：低い順
 TECH_ROLE_ORDER = [
     "技術班",
     "高度技術班",
@@ -39,8 +39,8 @@ TECH_ROLE_ORDER = [
 ]
 TECH_ROLE_COST_XP = {
     "技術班": 500,
-    "高度技術班": 5000,
-    "技術班最高幹部": 30000
+    "高度技術班": 2500,
+    "技術班最高幹部": 8000
 }
 
 # ✅ 管理者が選べるXP額一覧
@@ -136,19 +136,35 @@ async def get_user_current_tech_rank(guild, user_id):
             return rank
     return None
 
-# ✅ 階級進捗表示を作成
+# ✅ 【最新版】階級表示：上から高い順、下位は薄字、現在👈now、次👈next
 def build_rank_progress(order, current_rank):
     lines = []
-    for name in order:
-        if current_rank is None:
-            icon = "⬜"
-        elif name == current_rank:
-            icon = "🏅"
-        elif order.index(name) < order.index(current_rank):
-            icon = "✅"
+    reversed_order = list(reversed(order))  # 高い順
+    
+    if current_rank is None:
+        # 未取得：最下位がnext
+        for idx, name in enumerate(reversed_order):
+            if idx == len(reversed_order) - 1:
+                lines.append(f"{name} 👈next")
+            else:
+                lines.append(f"{name}")
+        return "\n".join(lines)
+    
+    current_index = reversed_order.index(current_rank)
+    
+    for idx, name in enumerate(reversed_order):
+        if name == current_rank:
+            # 現在の階級
+            lines.append(f"**{name} 👈now**")
+        elif idx == current_index - 1:
+            # 一つ上 = 次の目標
+            lines.append(f"{name} 👈next")
+        elif idx > current_index:
+            # 下位階級：取消線で薄く表示
+            lines.append(f"~~{name}~~")
         else:
-            icon = "⬜"
-        lines.append(f"{icon} {name}")
+            # それより上位（まだ先）
+            lines.append(f"{name}")
     return "\n".join(lines)
 
 # ========== ✅ Discord APIによるトークン実在確認 ==========
@@ -392,12 +408,12 @@ class MainPanelView(discord.ui.View):
         embed_text += f"**現在の階級: {current_rank or '未取得'}**\n"
         embed_text += build_rank_progress(ROLE_ORDER, current_rank) + "\n\n"
         for name, price in reversed(list(ROLE_PRICES.items())):
-            embed_text += f"🏅 `{name}` → {price} pt\n"
+            embed_text += f"`{name}` → {price} pt\n"
         embed_text += "\n### 🔧 技術班階級（xpで購入）\n"
         embed_text += f"**現在の技術班階級: {current_tech_rank or '未取得'}**\n"
         embed_text += build_rank_progress(TECH_ROLE_ORDER, current_tech_rank) + "\n\n"
         for name, cost in reversed(list(TECH_ROLE_COST_XP.items())):
-            embed_text += f"🔧 `{name}` → {cost} xp\n"
+            embed_text += f"`{name}` → {cost} xp\n"
         embed_text += "\n購入したいロール名をDMで送信してください。"
 
         await interaction.followup.send(embed_text, ephemeral=True)
