@@ -16,7 +16,7 @@ intents.messages = True
 intents.guilds = True
 intents.dm_messages = True
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+bot = commands.Bot(command_prefix="!！", intents=intents)
 
 # === 設定 ===
 ROLE_PRICES = {
