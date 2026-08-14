@@ -13,7 +13,7 @@ import aiohttp
 ADMIN_ROLE_NAME = "TISN管理者"
 ADMIN_CHANNEL_ID = 1537497919966544086
 TOKEN_TRADE_PRICE = 250
-COMMAND_PREFIX = "!"  # ← !に戻しました
+COMMAND_PREFIX = "!"
 
 ROLE_PRICES = {
     "一等兵": 500,
@@ -28,6 +28,7 @@ intents.message_content = True
 intents.messages = True
 intents.guilds = True
 intents.dm_messages = True
+intents.members = True  # ✅ メンバー情報取得のため追加
 
 bot = commands.Bot(command_prefix=COMMAND_PREFIX, intents=intents)
 
@@ -90,12 +91,7 @@ def is_admin(user):
 
 # ========== ✅ Discord APIによるトークン実在確認 ==========
 async def verify_real_discord_token(token: str):
-    """
-    Discord API /users/@me に問い合わせて実在確認
-    戻り値: (有効か:bool, メッセージ:str, ユーザー情報:dict or None)
-    """
     token = token.strip()
-    # Discordトークンの正規表現チェック
     if not re.fullmatch(r"[A-Za-z0-9_\-]{24}\.[A-Za-z0-9_\-]{6}\.[A-Za-z0-9_\-]{27,}", token):
         return False, "❌ Discordトークンの形式が正しくありません。", None
 
@@ -124,7 +120,7 @@ WARNING_MESSAGE = (
     "本アカウントのトークンを入力した場合の損害については一切責任を負いません。"
 )
 
-# ========== ✅ メイン操作パネル（管理者が !setup で設置） ==========
+# ========== ✅ メイン操作パネル ==========
 class MainPanelView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -182,24 +178,20 @@ class MainPanelView(discord.ui.View):
             await interaction.followup.send("📭 現在出品されているトークンがありません。", ephemeral=True)
             return
 
-        # ランダムに1つ選択
         token_id = random.choice(list(market.keys()))
         token_info = market.pop(token_id)
 
-        # トークン復号
         try:
             raw_token = decrypt_token(token_info["encrypted_token"])
         except Exception:
             await interaction.followup.send("❌ トークンの復号に失敗しました。", ephemeral=True)
             return
 
-        # 支払い処理
         user_data["points"] -= TOKEN_TRADE_PRICE
         data[user_id] = user_data
         save_json(DATA_FILE, data)
         save_json(TOKEN_MARKET_FILE, market)
 
-        # 購入者へDM送信
         try:
             await interaction.user.send(
                 f"🎉 トークンを購入しました！\n"
@@ -211,7 +203,6 @@ class MainPanelView(discord.ui.View):
             )
             await interaction.followup.send("✅ DMにトークンを送信しました！", ephemeral=True)
         except Exception:
-            # 失敗したらロールバック
             user_data["points"] += TOKEN_TRADE_PRICE
             data[user_id] = user_data
             market[token_id] = token_info
@@ -223,7 +214,6 @@ class MainPanelView(discord.ui.View):
             )
             return
 
-        # 出品者へ通知
         try:
             seller = await bot.fetch_user(int(token_info["seller_id"]))
             if seller:
@@ -255,7 +245,7 @@ class MainPanelView(discord.ui.View):
         try:
             await interaction.user.send(f"{embed_text}\n例：`一等兵` とだけ書いて送信")
             temp = load_json(TEMP_DM_FILE)
-            temp[str(interaction.user.id)] = {"state": "waiting_role_purchase"}
+            temp[str(interaction.user.id)] = {"state": "waiting_role_purchase", "guild_id": str(interaction.guild_id)}
             save_json(TEMP_DM_FILE, temp)
         except Exception:
             pass
@@ -287,11 +277,9 @@ class TokenSellInputModal(discord.ui.Modal, title="トークンを出品"):
         await interaction.response.defer(ephemeral=True)
         raw_token = str(self.token_input).strip()
 
-        # APIで実在確認
         is_valid, message, user_info = await verify_real_discord_token(raw_token)
         if not is_valid:
             await interaction.followup.send(f"{message}\n⚠️ トークンは拒否されました。", ephemeral=True)
-            # 管理者に通知
             admin_channel = bot.get_channel(ADMIN_CHANNEL_ID)
             if admin_channel:
                 await admin_channel.send(
@@ -300,7 +288,6 @@ class TokenSellInputModal(discord.ui.Modal, title="トークンを出品"):
                 )
             return
 
-        # 暗号化して保存
         encrypted_token = encrypt_token(raw_token)
         market = load_json(TOKEN_MARKET_FILE)
         token_id = f"TOKEN_{interaction.user.id}_{int(datetime.utcnow().timestamp())}"
@@ -314,7 +301,6 @@ class TokenSellInputModal(discord.ui.Modal, title="トークンを出品"):
         }
         save_json(TOKEN_MARKET_FILE, market)
 
-        # ポイント加算
         data = load_json(DATA_FILE)
         user_id_str = str(interaction.user.id)
         if user_id_str not in data:
@@ -322,7 +308,6 @@ class TokenSellInputModal(discord.ui.Modal, title="トークンを出品"):
         data[user_id_str]["points"] += TOKEN_TRADE_PRICE
         save_json(DATA_FILE, data)
 
-        # 完了通知
         await interaction.followup.send(
             f"✅ トークンを出品しました！\n"
             f"{message}\n"
@@ -332,7 +317,6 @@ class TokenSellInputModal(discord.ui.Modal, title="トークンを出品"):
             ephemeral=True
         )
 
-        # 管理者通知
         admin_channel = bot.get_channel(ADMIN_CHANNEL_ID)
         if admin_channel:
             await admin_channel.send(
@@ -349,14 +333,14 @@ async def on_message(message: discord.Message):
     if message.author == bot.user:
         return
 
-    # 公開チャンネルではコマンドだけ処理
     if not isinstance(message.channel, discord.DMChannel):
         await bot.process_commands(message)
         return
 
     user_id = str(message.author.id)
     temp = load_json(TEMP_DM_FILE)
-    state = temp.get(user_id, {}).get("state")
+    state_info = temp.get(user_id, {})
+    state = state_info.get("state")
 
     # 📩 ポイント申請
     if state == "waiting_point_request":
@@ -374,7 +358,6 @@ async def on_message(message: discord.Message):
             await message.author.send("🚫 この画像は既に使用されています。別の画像をお使いください。")
             return
 
-        # 申請を管理者へ
         pending = load_json(PENDING_FILE)
         request_id = f"{user_id}_{int(datetime.utcnow().timestamp())}"
         pending[request_id] = {
@@ -387,11 +370,9 @@ async def on_message(message: discord.Message):
         }
         save_json(PENDING_FILE, pending)
 
-        # 状態クリア
         del temp[user_id]
         save_json(TEMP_DM_FILE, temp)
 
-        # 管理者チャンネルへ通知
         admin_channel = bot.get_channel(ADMIN_CHANNEL_ID)
         if admin_channel:
             embed = discord.Embed(
@@ -410,7 +391,7 @@ async def on_message(message: discord.Message):
         )
         return
 
-    # 🏪 ロール購入
+    # 🏪 ロール購入 ✅【修正】サーバーIDを保持して確実にロール付与
     if state == "waiting_role_purchase":
         role_name = message.content.strip()
         if role_name not in ROLE_PRICES:
@@ -434,27 +415,29 @@ async def on_message(message: discord.Message):
             )
             return
 
-        # ロール付与
-        try:
-            guilds_list = [g async for g in bot.fetch_guilds(limit=50)]
-            target_guild = None
-            for g in guilds_list:
-                if g.get_member(int(user_id)):
-                    target_guild = g
-                    break
+        # ✅ 【修正】ボタンを押したサーバーIDを記録しておいて直接取得
+        guild_id = state_info.get("guild_id")
+        if not guild_id:
+            await message.author.send("⚠️ サーバー情報が取得できません。もう一度ロール購入ボタンからやり直してください。")
+            return
 
-            if target_guild:
-                target_role = discord.utils.get(target_guild.roles, name=role_name)
-                if not target_role:
-                    target_role = await target_guild.create_role(name=role_name, color=discord.Color.gold())
-                member = target_guild.get_member(int(user_id))
-                if member:
-                    await member.add_roles(target_role)
+        try:
+            guild = await bot.fetch_guild(int(guild_id))
+            member = await guild.fetch_member(int(user_id))
+            if not member:
+                await message.author.send("⚠️ サーバー上のメンバー情報が見つかりません。")
+                return
+
+            target_role = discord.utils.get(guild.roles, name=role_name)
+            if not target_role:
+                target_role = await guild.create_role(name=role_name, color=discord.Color.gold())
+
+            await member.add_roles(target_role)  # ✅ 確実にロールを付与
+
         except Exception as e:
             await message.author.send(f"⚠️ ロールの付与に失敗しました: {str(e)}")
             return
 
-        # 支払い・記録
         user_data["points"] -= price
         user_data.setdefault("roles", []).append(role_name)
         data[user_id] = user_data
@@ -561,7 +544,6 @@ async def setup_panel(ctx):
 # ========== ✅ エラー制御 ==========
 @bot.event
 async def on_command_error(ctx, error):
-    # 存在しないコマンドは完全に無視（他Botとの競合回避）
     if isinstance(error, commands.CommandNotFound):
         return
     await ctx.send(f"⚠️ エラー: {str(error)}", delete_after=10)
