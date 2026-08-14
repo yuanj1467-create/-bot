@@ -28,7 +28,7 @@ intents.message_content = True
 intents.messages = True
 intents.guilds = True
 intents.dm_messages = True
-intents.members = True  # ✅ メンバー情報取得のため追加
+intents.members = True
 
 bot = commands.Bot(command_prefix=COMMAND_PREFIX, intents=intents)
 
@@ -76,11 +76,12 @@ def save_json(path, data):
 def is_image_used(image_url: str) -> bool:
     return image_url in load_json(IMAGE_LOG_FILE)
 
-def mark_image_used(image_url: str, user_id: str, points: int):
+def mark_image_used(image_url: str, user_id: str, points: int, comment: str = ""):
     log = load_json(IMAGE_LOG_FILE)
     log[image_url] = {
         "user_id": user_id,
         "points": points,
+        "comment": comment,
         "used_at": datetime.utcnow().isoformat()
     }
     save_json(IMAGE_LOG_FILE, log)
@@ -131,8 +132,9 @@ class MainPanelView(discord.ui.View):
         try:
             await interaction.user.send(
                 "## 📩 ポイント申請フォーム\n"
-                "このDMに **証拠の画像（通知のスクリーンショット）** と **数字（通知の数）** を一緒に送ってください。\n\n"
-                "✅ 例：画像を添付して、メッセージ欄に `150` とだけ書いて送信\n"
+                "このDMに **証拠の画像（通知のスクリーンショット）** を添付し、\n"
+                "**数字（通知の数）** と **任意のコメント（空欄可）** を一緒に書いて送信してください。\n\n"
+                "✅ 例：画像を添付して「150 先月分の通知です」と送信\n"
                 "⚠️ 同じ画像の再利用は禁止です\n"
                 "⚠️ 管理者の承認後にポイントが加算されます"
             )
@@ -327,6 +329,111 @@ class TokenSellInputModal(discord.ui.Modal, title="トークンを出品"):
             )
 
 
+# ========== ✅ 管理者用：コメント入力用モーダル ==========
+class ApproveModal(discord.ui.Modal, title="✅ 承認"):
+    comment = discord.ui.TextInput(label="ユーザーへのメッセージ（任意）", style=discord.TextStyle.long, required=False)
+
+    def __init__(self, req_id, pts, target_uid, img_url):
+        super().__init__()
+        self.req_id = req_id
+        self.pts = pts
+        self.target_uid = target_uid
+        self.img_url = img_url
+
+    async def on_submit(self, interaction):
+        if not is_admin(interaction.user):
+            await interaction.response.send_message("❌ TISN管理者ロールが必要です。", ephemeral=True)
+            return
+
+        data = load_json(DATA_FILE)
+        if self.target_uid not in data:
+            data[self.target_uid] = {"points": 0, "roles": []}
+        data[self.target_uid]["points"] += self.pts
+        save_json(DATA_FILE, data)
+        mark_image_used(self.img_url, self.target_uid, self.pts, str(self.comment))
+
+        pending = load_json(PENDING_FILE)
+        if self.req_id in pending:
+            del pending[self.req_id]
+            save_json(PENDING_FILE, pending)
+
+        embed = discord.Embed(title="✅ 承認済み", description=f"{self.pts} pt 加算完了", color=0x2ECC71)
+        if self.comment:
+            embed.add_field(name="📝 管理者からのメッセージ", value=str(self.comment), inline=False)
+        await interaction.message.edit(embed=embed, view=None)
+        await interaction.response.send_message(f"✅ {self.pts} pt 加算しました。", ephemeral=True)
+
+        try:
+            target_user = await bot.fetch_user(int(self.target_uid))
+            msg = f"🎉 ポイント申請が承認されました！ +{self.pts} pt"
+            if self.comment:
+                msg += f"\n📝 メッセージ: {self.comment}"
+            if target_user:
+                await target_user.send(msg)
+        except Exception:
+            pass
+
+
+class DenyModal(discord.ui.Modal, title="❌ 拒否"):
+    comment = discord.ui.TextInput(label="拒否の理由（任意）", style=discord.TextStyle.long, required=False)
+
+    def __init__(self, req_id, target_uid):
+        super().__init__()
+        self.req_id = req_id
+        self.target_uid = target_uid
+
+    async def on_submit(self, interaction):
+        if not is_admin(interaction.user):
+            await interaction.response.send_message("❌ TISN管理者ロールが必要です。", ephemeral=True)
+            return
+
+        pending = load_json(PENDING_FILE)
+        if self.req_id in pending:
+            del pending[self.req_id]
+            save_json(PENDING_FILE, pending)
+
+        embed = discord.Embed(title="❌ 拒否済み", description="申請を拒否しました。", color=0xE74C3C)
+        if self.comment:
+            embed.add_field(name="📝 理由", value=str(self.comment), inline=False)
+        await interaction.message.edit(embed=embed, view=None)
+        await interaction.response.send_message("❌ 拒否しました。", ephemeral=True)
+
+        try:
+            target_user = await bot.fetch_user(int(self.target_uid))
+            msg = "❌ 残念ながらポイント申請は拒否されました。"
+            if self.comment:
+                msg += f"\n📝 理由: {self.comment}"
+            if target_user:
+                await target_user.send(msg)
+        except Exception:
+            pass
+
+
+# ========== ✅ 管理者用：承認/拒否ボタン（コメント入力付き） ==========
+class ApproveDenyView(discord.ui.View):
+    def __init__(self, request_id: str, points: int, target_user_id: str, image_url: str, user_comment: str = ""):
+        super().__init__(timeout=None)
+        self.request_id = request_id
+        self.points = points
+        self.target_user_id = target_user_id
+        self.image_url = image_url
+        self.user_comment = user_comment
+
+    @discord.ui.button(label="✅ 承認", style=discord.ButtonStyle.green)
+    async def approve_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_admin(interaction.user):
+            await interaction.response.send_message("❌ TISN管理者ロールが必要です。", ephemeral=True)
+            return
+        await interaction.response.send_modal(ApproveModal(self.request_id, self.points, self.target_user_id, self.image_url))
+
+    @discord.ui.button(label="❌ 拒否", style=discord.ButtonStyle.red)
+    async def deny_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_admin(interaction.user):
+            await interaction.response.send_message("❌ TISN管理者ロールが必要です。", ephemeral=True)
+            return
+        await interaction.response.send_modal(DenyModal(self.request_id, self.target_user_id))
+
+
 # ========== ✅ DMからのメッセージ処理 ==========
 @bot.event
 async def on_message(message: discord.Message):
@@ -342,16 +449,20 @@ async def on_message(message: discord.Message):
     state_info = temp.get(user_id, {})
     state = state_info.get("state")
 
-    # 📩 ポイント申請
+    # 📩 ポイント申請 ✅ コメントを追加で受信
     if state == "waiting_point_request":
         if not message.attachments:
-            await message.author.send("⚠️ 画像が見当たりません。画像を添付して数字と一緒に送ってください。")
+            await message.author.send("⚠️ 画像が見当たりません。画像を添付して数字とコメントと一緒に送ってください。")
             return
-        try:
-            point_value = int(message.content.strip())
-        except ValueError:
-            await message.author.send("⚠️ 数字だけを入力してください。（例: `150`）")
+
+        content = message.content.strip()
+        match = re.match(r"^(\d+)\s*(.*)$", content)
+        if not match:
+            await message.author.send("⚠️ 先頭に数字を入力し、その後にコメントを書いてください。\n例：`150 先月分の通知です`")
             return
+
+        point_value = int(match.group(1))
+        user_comment = match.group(2).strip() or "（コメントなし）"
 
         image_url = message.attachments[0].url
         if is_image_used(image_url):
@@ -364,6 +475,7 @@ async def on_message(message: discord.Message):
             "user_id": user_id,
             "user_name": str(message.author),
             "points": point_value,
+            "comment": user_comment,
             "image_url": image_url,
             "status": "pending",
             "applied_at": datetime.utcnow().isoformat()
@@ -377,21 +489,22 @@ async def on_message(message: discord.Message):
         if admin_channel:
             embed = discord.Embed(
                 title="📩 ポイント申請（DM経由）",
-                description=f"申請者: {message.author.mention} / {message.author}\n申請ポイント: **{point_value} pt**",
+                description=f"申請者: {message.author.mention} / {message.author}\n申請ポイント: **{point_value} pt**\n📝 申請者コメント: {user_comment}",
                 color=0x2ECC71
             )
             embed.set_image(url=image_url)
             embed.set_footer(text=f"申請ID: {request_id}")
-            await admin_channel.send(embed=embed, view=ApproveDenyView(request_id, point_value, user_id, image_url))
+            await admin_channel.send(embed=embed, view=ApproveDenyView(request_id, point_value, user_id, image_url, user_comment))
 
         await message.author.send(
             f"✅ 申請を送信しました！\n"
             f"申請額: **{point_value} pt**\n"
+            f"コメント: {user_comment}\n"
             f"管理者の承認をお待ちください。"
         )
         return
 
-    # 🏪 ロール購入 ✅【修正】サーバーIDを保持して確実にロール付与
+    # 🏪 ロール購入 ✅【修正】権限エラー時に自動返金して再購入可能に
     if state == "waiting_role_purchase":
         role_name = message.content.strip()
         if role_name not in ROLE_PRICES:
@@ -415,30 +528,44 @@ async def on_message(message: discord.Message):
             )
             return
 
-        # ✅ 【修正】ボタンを押したサーバーIDを記録しておいて直接取得
         guild_id = state_info.get("guild_id")
         if not guild_id:
             await message.author.send("⚠️ サーバー情報が取得できません。もう一度ロール購入ボタンからやり直してください。")
             return
 
+        paid = False
         try:
+            # 先に仮決済
+            user_data["points"] -= price
+            data[user_id] = user_data
+            save_json(DATA_FILE, data)
+            paid = True
+
             guild = await bot.fetch_guild(int(guild_id))
             member = await guild.fetch_member(int(user_id))
             if not member:
-                await message.author.send("⚠️ サーバー上のメンバー情報が見つかりません。")
-                return
+                raise Exception("メンバーが見つかりません")
 
             target_role = discord.utils.get(guild.roles, name=role_name)
             if not target_role:
                 target_role = await guild.create_role(name=role_name, color=discord.Color.gold())
 
-            await member.add_roles(target_role)  # ✅ 確実にロールを付与
+            await member.add_roles(target_role)
 
         except Exception as e:
-            await message.author.send(f"⚠️ ロールの付与に失敗しました: {str(e)}")
+            # ✅ 失敗 → 自動返金
+            if paid:
+                user_data["points"] += price
+                data[user_id] = user_data
+                save_json(DATA_FILE, data)
+            await message.author.send(
+                f"⚠️ ロールの付与に失敗しました。\n"
+                f"原因: {str(e)}\n"
+                f"💳 {price} pt は返金されました。権限を確認してから再度お試しください。"
+            )
             return
 
-        user_data["points"] -= price
+        # ✅ 成功時：ロール記録
         user_data.setdefault("roles", []).append(role_name)
         data[user_id] = user_data
         save_json(DATA_FILE, data)
@@ -454,71 +581,6 @@ async def on_message(message: discord.Message):
         return
 
     await bot.process_commands(message)
-
-
-# ========== ✅ 管理者用：承認/拒否ボタン ==========
-class ApproveDenyView(discord.ui.View):
-    def __init__(self, request_id: str, points: int, target_user_id: str, image_url: str):
-        super().__init__(timeout=None)
-        self.request_id = request_id
-        self.points = points
-        self.target_user_id = target_user_id
-        self.image_url = image_url
-
-    @discord.ui.button(label="✅ 承認", style=discord.ButtonStyle.green)
-    async def approve_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not is_admin(interaction.user):
-            await interaction.response.send_message("❌ TISN管理者ロールが必要です。", ephemeral=True)
-            return
-
-        data = load_json(DATA_FILE)
-        if self.target_user_id not in data:
-            data[self.target_user_id] = {"points": 0, "roles": []}
-        data[self.target_user_id]["points"] += self.points
-        save_json(DATA_FILE, data)
-        mark_image_used(self.image_url, self.target_user_id, self.points)
-
-        pending = load_json(PENDING_FILE)
-        if self.request_id in pending:
-            del pending[self.request_id]
-            save_json(PENDING_FILE, pending)
-
-        await interaction.message.edit(
-            embed=discord.Embed(title="✅ 承認済み", description=f"{self.points} pt 加算完了", color=0x2ECC71),
-            view=None
-        )
-        await interaction.response.send_message(f"✅ {self.points} pt 加算しました。", ephemeral=True)
-
-        try:
-            target_user = await bot.fetch_user(int(self.target_user_id))
-            if target_user:
-                await target_user.send(f"🎉 ポイント申請が承認されました！ +{self.points} pt")
-        except Exception:
-            pass
-
-    @discord.ui.button(label="❌ 拒否", style=discord.ButtonStyle.red)
-    async def deny_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not is_admin(interaction.user):
-            await interaction.response.send_message("❌ TISN管理者ロールが必要です。", ephemeral=True)
-            return
-
-        pending = load_json(PENDING_FILE)
-        if self.request_id in pending:
-            del pending[self.request_id]
-            save_json(PENDING_FILE, pending)
-
-        await interaction.message.edit(
-            embed=discord.Embed(title="❌ 拒否済み", description="申請を拒否しました。", color=0xE74C3C),
-            view=None
-        )
-        await interaction.response.send_message("❌ 拒否しました。", ephemeral=True)
-
-        try:
-            target_user = await bot.fetch_user(int(self.target_user_id))
-            if target_user:
-                await target_user.send("❌ 残念ながらポイント申請は拒否されました。")
-        except Exception:
-            pass
 
 
 # ========== ✅ 管理者用コマンド：パネル設置 ==========
