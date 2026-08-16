@@ -45,8 +45,8 @@ TECH_ROLE_ORDER = [
 ]
 TECH_ROLE_COST_XP = {
     "技術班": 500,
-    "高度技術班": 5000,
-    "技術班最高幹部": 30000
+    "高度技術班": 2500,
+    "技術班最高幹部": 8000
 }
 
 # ✅ 管理者が選べるXP額一覧
@@ -60,6 +60,47 @@ intents.dm_messages = True
 intents.members = True
 
 bot = commands.Bot(command_prefix=COMMAND_PREFIX, intents=intents)
+
+
+# ==================================================
+# ✅ 共通関数：PT・XP変更時に本人と管理者へ通知
+# ==================================================
+async def send_value_change_notice(user_id: str, mode: str, before: int, after: int, reason: str = ""):
+    diff = after - before
+    sign = "+" if diff >= 0 else ""
+    notice_text = f"""📊 【{mode.upper()} 値が更新されました】
+変化前: {before} {mode.upper()} → 変化後: {after} {mode.upper()}
+変更量: {sign}{diff} {mode.upper()}"""
+    if reason:
+        notice_text += f"\n📝 理由: {reason}"
+
+    # ① 本人にDM送信
+    try:
+        target_user = await bot.fetch_user(int(user_id))
+        if target_user:
+            await target_user.send(notice_text)
+    except Exception:
+        pass
+
+    # ② 管理者チャンネルに送信
+    try:
+        admin_ch = bot.get_channel(ADMIN_CHANNEL_ID)
+        if admin_ch:
+            user_name = ""
+            try:
+                u = await bot.fetch_user(int(user_id))
+                user_name = f"{u.name} （ID:{user_id}）"
+            except:
+                user_name = f"ID:{user_id}"
+            admin_notice = f"""📊 【{mode.upper()} 更新通知】
+対象: {user_name}
+変化前: {before} {mode.upper()} → 変化後: {after} {mode.upper()}
+変更量: {sign}{diff} {mode.upper()}"""
+            if reason:
+                admin_notice += f"\n📝 理由: {reason}"
+            await admin_ch.send(admin_notice)
+    except Exception:
+        pass
 
 
 # ==================================================
@@ -131,6 +172,60 @@ async def daily_ranking_task():
 
     embed = await build_ranking_embed()
     await ranking_channel.send(embed=embed)
+
+
+# ==================================================
+# ✅ 管理者専用：全員のPTを一括で増減
+# ==================================================
+@bot.command(name="edit_all_pt")
+async def edit_all_pt(ctx, amount: int, *, reason: str = "理由なし"):
+    if not is_admin(ctx.author):
+        await ctx.send("❌ TISN管理者ロールが必要です。", delete_after=5)
+        return
+
+    data = load_json(DATA_FILE)
+    if not data:
+        await ctx.send("📭 ユーザーデータが存在しません。", delete_after=5)
+        return
+
+    count = 0
+    for user_id, u_data in data.items():
+        before = u_data.get("points", 0)
+        after = before + amount
+        u_data["points"] = after
+        data[user_id] = u_data
+        await send_value_change_notice(user_id, "pt", before, after, reason)
+        count += 1
+
+    save_json(DATA_FILE, data)
+    await ctx.send(f"✅ 全{count}名のPTを {amount} に変更しました。\n📝 理由：{reason}", delete_after=15)
+
+
+# ==================================================
+# ✅ 管理者専用：全員のXPを一括で増減
+# ==================================================
+@bot.command(name="edit_all_xp")
+async def edit_all_xp(ctx, amount: int, *, reason: str = "理由なし"):
+    if not is_admin(ctx.author):
+        await ctx.send("❌ TISN管理者ロールが必要です。", delete_after=5)
+        return
+
+    data = load_json(DATA_FILE)
+    if not data:
+        await ctx.send("📭 ユーザーデータが存在しません。", delete_after=5)
+        return
+
+    count = 0
+    for user_id, u_data in data.items():
+        before = u_data.get("xp", 0)
+        after = before + amount
+        u_data["xp"] = after
+        data[user_id] = u_data
+        await send_value_change_notice(user_id, "xp", before, after, reason)
+        count += 1
+
+    save_json(DATA_FILE, data)
+    await ctx.send(f"✅ 全{count}名のXPを {amount} に変更しました。\n📝 理由：{reason}", delete_after=15)
 
 
 # ========== ✅ 暗号化キー管理 ==========
@@ -214,6 +309,16 @@ async def get_user_current_tech_rank(guild, user_id):
             return rank
     return None
 
+# ✅ 次の階級名と値段を取得
+def get_next_rank_info(current_rank, rank_order, price_table):
+    if current_rank is None:
+        return rank_order[0], price_table[rank_order[0]]
+    current_index = rank_order.index(current_rank)
+    if current_index >= len(rank_order) - 1:
+        return None, None
+    next_rank = rank_order[current_index + 1]
+    return next_rank, price_table[next_rank]
+
 # ✅ 階級表示フォーマット
 def build_rank_progress(order, current_rank):
     lines = []
@@ -290,8 +395,12 @@ class XPGrantView(discord.ui.View):
         data = load_json(DATA_FILE)
         if self.target_user_id not in data:
             data[self.target_user_id] = {"points": 0, "xp": 0, "roles": [], "tech_roles": []}
-        data[self.target_user_id]["xp"] = data[self.target_user_id].get("xp", 0) + xp_amount
+        
+        before = data[self.target_user_id].get("xp", 0)
+        after = before + xp_amount
+        data[self.target_user_id]["xp"] = after
         save_json(DATA_FILE, data)
+        await send_value_change_notice(self.target_user_id, "xp", before, after, "申請による付与")
 
         pending = load_json(XP_PENDING_FILE)
         if self.req_id in pending:
@@ -318,7 +427,92 @@ class XPGrantView(discord.ui.View):
         except Exception:
             pass
 
-# ========== ✅ メイン操作パネル ==========
+
+# ========== ✅ 昇格確認画面：通常階級用 ==========
+class PromoteConfirmView(discord.ui.View):
+    def __init__(self, next_rank, cost_pt):
+        super().__init__(timeout=120)
+        self.next_rank = next_rank
+        self.cost_pt = cost_pt
+
+    @discord.ui.button(label="✅ 昇格を確定", style=discord.ButtonStyle.green)
+    async def confirm_promote(self, interaction: discord.Interaction, button: discord.ui.Button):
+        user_id = str(interaction.user.id)
+        data = load_json(DATA_FILE)
+        guild = interaction.guild
+        member = await guild.fetch_member(interaction.user.id)
+        user_data = data.setdefault(user_id, {"points": 0, "xp": 0, "roles": [], "tech_roles": []})
+
+        if user_data["points"] < self.cost_pt:
+            await interaction.response.edit_message(
+                content=f"⚠️ 申し訳ありません！PTが不足しています。\n必要: {self.cost_pt} PT / 所持: {user_data['points']} PT",
+                view=None
+            )
+            return
+
+        before_pt = user_data["points"]
+        after_pt = before_pt - self.cost_pt
+        user_data["points"] = after_pt
+        save_json(DATA_FILE, data)
+        await send_value_change_notice(user_id, "pt", before_pt, after_pt, f"階級昇格：{self.next_rank} へ")
+
+        role = discord.utils.get(guild.roles, name=self.next_rank)
+        if role:
+            await member.add_roles(role)
+
+        await interaction.response.edit_message(
+            content=f"🎉 **昇格完了！** {self.next_rank} になりました！\n💳 消費PT: {self.cost_pt} PT\n💰 残高: {after_pt} PT",
+            view=None
+        )
+
+    @discord.ui.button(label="❌ キャンセル", style=discord.ButtonStyle.red)
+    async def cancel_promote(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(content="❌ 昇格をキャンセルしました。", view=None)
+
+
+# ========== ✅ 昇格確認画面：技術班階級用 ==========
+class TechPromoteConfirmView(discord.ui.View):
+    def __init__(self, next_rank, cost_xp):
+        super().__init__(timeout=120)
+        self.next_rank = next_rank
+        self.cost_xp = cost_xp
+
+    @discord.ui.button(label="✅ 昇格を確定", style=discord.ButtonStyle.green)
+    async def confirm_tech_promote(self, interaction: discord.Interaction, button: discord.ui.Button):
+        user_id = str(interaction.user.id)
+        data = load_json(DATA_FILE)
+        guild = interaction.guild
+        member = await guild.fetch_member(interaction.user.id)
+        user_data = data.setdefault(user_id, {"points": 0, "xp": 0, "roles": [], "tech_roles": []})
+
+        if user_data["xp"] < self.cost_xp:
+            await interaction.response.edit_message(
+                content=f"⚠️ 申し訳ありません！XPが不足しています。\n必要: {self.cost_xp} XP / 所持: {user_data['xp']} XP",
+                view=None
+            )
+            return
+
+        before_xp = user_data["xp"]
+        after_xp = before_xp - self.cost_xp
+        user_data["xp"] = after_xp
+        save_json(DATA_FILE, data)
+        await send_value_change_notice(user_id, "xp", before_xp, after_xp, f"技術班階級昇格：{self.next_rank} へ")
+
+        role = discord.utils.get(guild.roles, name=self.next_rank)
+        if role:
+            await member.add_roles(role)
+
+        await interaction.response.edit_message(
+            content=f"🎉 **技術班昇格完了！** {self.next_rank} になりました！\n💳 消費XP: {self.cost_xp} XP\n💰 残高: {after_xp} XP",
+            view=None
+        )
+
+    @discord.ui.button(label="❌ キャンセル", style=discord.ButtonStyle.red)
+    async def cancel_tech_promote(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(content="❌ 昇格をキャンセルしました。", view=None)
+
+
+# ========== ✅ メイン操作パネル（昇格ボタンに変更） ==========
 class MainPanelView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -386,9 +580,12 @@ class MainPanelView(discord.ui.View):
             await interaction.followup.send("❌ トークンの復号に失敗しました。", ephemeral=True)
             return
 
-        user_data["points"] -= TOKEN_TRADE_PRICE
+        before_pt = user_data["points"]
+        after_pt = before_pt - TOKEN_TRADE_PRICE
+        user_data["points"] = after_pt
         data[user_id] = user_data
         save_json(DATA_FILE, data)
+        await send_value_change_notice(user_id, "pt", before_pt, after_pt, "トークン購入")
         save_json(TOKEN_MARKET_FILE, market)
 
         try:
@@ -416,22 +613,17 @@ class MainPanelView(discord.ui.View):
         try:
             seller = await bot.fetch_user(int(token_info["seller_id"]))
             if seller:
+                s_before = data[token_info["seller_id"]]["points"]
+                s_after = s_before + TOKEN_TRADE_PRICE
+                data[token_info["seller_id"]]["points"] = s_after
+                save_json(DATA_FILE, data)
+                await send_value_change_notice(token_info["seller_id"], "pt", s_before, s_after, "トークンが購入された報酬")
                 await seller.send(
                     f"📢 あなたのトークン（{token_info['owner_username']}）が購入されました！\n"
                     f"💳 報酬: +{TOKEN_TRADE_PRICE} pt"
                 )
         except Exception:
             pass
-
-    @discord.ui.button(label="💰 pt確認", style=discord.ButtonStyle.primary, custom_id="panel_check_point")
-    async def btn_check_point(self, interaction: discord.Interaction, button: discord.ui.Button):
-        user_id = str(interaction.user.id)
-        data = load_json(DATA_FILE)
-        points = data.get(user_id, {}).get("points", 0)
-        await interaction.response.send_message(
-            f"💰 {interaction.user.mention} のポイント: **{points} pt**",
-            ephemeral=True
-        )
 
     @discord.ui.button(label="⚡ XP申請", style=discord.ButtonStyle.blurple, custom_id="panel_xp_request")
     async def btn_xp_req(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -465,34 +657,91 @@ class MainPanelView(discord.ui.View):
             ephemeral=True
         )
 
-    @discord.ui.button(label="🏪 ロール購入", style=discord.ButtonStyle.secondary, custom_id="panel_buy_role")
-    async def btn_shop(self, interaction: discord.Interaction, button: discord.ui.Button):
+    # ✅ 通常階級 昇格ボタン
+    @discord.ui.button(label="🎖️ 階級昇格(pt)", style=discord.ButtonStyle.green, custom_id="panel_promote_rank")
+    async def btn_promote_rank(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
-        guild = await bot.fetch_guild(int(interaction.guild_id))
+        guild = interaction.guild
+        user_id = str(interaction.user.id)
+        data = load_json(DATA_FILE)
+        user_data = data.setdefault(user_id, {"points": 0, "xp": 0, "roles": [], "tech_roles": []})
+
         current_rank = await get_user_current_rank(guild, interaction.user.id)
-        current_tech_rank = await get_user_current_tech_rank(guild, interaction.user.id)
+        next_rank, cost_pt = get_next_rank_info(current_rank, ROLE_ORDER, ROLE_PRICES)
 
-        embed_text = "## 🏪 ロールショップ\n✅ 一つ下の階級を所持している場合のみ購入可\n\n"
-        embed_text += "### 🎖️ 通常階級（ptで購入）\n"
-        embed_text += f"**現在の階級: {current_rank or '未取得'}**\n"
-        embed_text += build_rank_progress(ROLE_ORDER, current_rank) + "\n\n"
-        for name, price in reversed(list(ROLE_PRICES.items())):
-            embed_text += f"`{name}` → {price} pt\n"
-        embed_text += "\n### 🔧 技術班階級（xpで購入）\n"
-        embed_text += f"**現在の技術班階級: {current_tech_rank or '未取得'}**\n"
-        embed_text += build_rank_progress(TECH_ROLE_ORDER, current_tech_rank) + "\n\n"
-        for name, cost in reversed(list(TECH_ROLE_COST_XP.items())):
-            embed_text += f"`{name}` → {cost} xp\n"
-        embed_text += "\n購入したいロール名をDMで送信してください。"
+        if not next_rank:
+            await interaction.followup.send("⚠️ すでに最高階級です。これ以上昇格できません。", ephemeral=True)
+            return
 
-        await interaction.followup.send(embed_text, ephemeral=True)
-        try:
-            await interaction.user.send(f"{embed_text}\n例：`一等兵` または `技術班` と送信")
-            temp = load_json(TEMP_DM_FILE)
-            temp[str(interaction.user.id)] = {"state": "waiting_role_purchase", "guild_id": str(interaction.guild_id)}
-            save_json(TEMP_DM_FILE, temp)
-        except Exception:
-            pass
+        if user_data["points"] < cost_pt:
+            await interaction.followup.send(
+                f"⚠️ PTが足りません！\n"
+                f"🎖️ 次の階級: {next_rank}\n"
+                f"💳 必要PT: {cost_pt} PT\n"
+                f"💰 所持PT: {user_data['points']} PT\n"
+                f"📉 不足: {cost_pt - user_data['points']} PT",
+                ephemeral=True
+            )
+            return
+
+        await interaction.followup.send(
+            f"📋 昇格確認\n"
+            f"🎖️ 現在の階級: {current_rank or '未取得'}\n"
+            f"⬆️ 次の階級: **{next_rank}**\n"
+            f"💳 消費PT: {cost_pt} PT\n"
+            f"💰 昇格後残高: {user_data['points'] - cost_pt} PT\n\n"
+            f"本当に{next_rank}に昇格しますか？",
+            view=PromoteConfirmView(next_rank, cost_pt),
+            ephemeral=True
+        )
+
+    # ✅ 技術班 昇格ボタン
+    @discord.ui.button(label="🔧 技術班昇格(xp)", style=discord.ButtonStyle.primary, custom_id="panel_promote_tech")
+    async def btn_promote_tech(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+        user_id = str(interaction.user.id)
+        data = load_json(DATA_FILE)
+        user_data = data.setdefault(user_id, {"points": 0, "xp": 0, "roles": [], "tech_roles": []})
+
+        current_rank = await get_user_current_tech_rank(guild, interaction.user.id)
+        next_rank, cost_xp = get_next_rank_info(current_rank, TECH_ROLE_ORDER, TECH_ROLE_COST_XP)
+
+        if not next_rank:
+            await interaction.followup.send("⚠️ すでに最高技術班階級です。これ以上昇格できません。", ephemeral=True)
+            return
+
+        if user_data["xp"] < cost_xp:
+            await interaction.followup.send(
+                f"⚠️ XPが足りません！\n"
+                f"🔧 次の階級: {next_rank}\n"
+                f"💳 必要XP: {cost_xp} XP\n"
+                f"💰 所持XP: {user_data['xp']} XP\n"
+                f"📉 不足: {cost_xp - user_data['xp']} XP",
+                ephemeral=True
+            )
+            return
+
+        await interaction.followup.send(
+            f"📋 技術班昇格確認\n"
+            f"🔧 現在の階級: {current_rank or '未取得'}\n"
+            f"⬆️ 次の階級: **{next_rank}**\n"
+            f"💳 消費XP: {cost_xp} XP\n"
+            f"💰 昇格後残高: {user_data['xp'] - cost_xp} XP\n\n"
+            f"本当に{next_rank}に昇格しますか？",
+            view=TechPromoteConfirmView(next_rank, cost_xp),
+            ephemeral=True
+        )
+
+    @discord.ui.button(label="💰 pt確認", style=discord.ButtonStyle.primary, custom_id="panel_check_point")
+    async def btn_check_point(self, interaction: discord.Interaction, button: discord.ui.Button):
+        user_id = str(interaction.user.id)
+        data = load_json(DATA_FILE)
+        points = data.get(user_id, {}).get("points", 0)
+        await interaction.response.send_message(
+            f"💰 {interaction.user.mention} のポイント: **{points} pt**",
+            ephemeral=True
+        )
 
 
 # ========== ✅ トークン出品フロー ==========
@@ -548,9 +797,13 @@ class TokenSellInputModal(discord.ui.Modal, title="トークンを出品"):
         data = load_json(DATA_FILE)
         user_id_str = str(interaction.user.id)
         if user_id_str not in data:
-            data[user_id_str] = {"points": 0, "xp": 0, "roles": []}
-        data[user_id_str]["points"] += TOKEN_TRADE_PRICE
+            data[user_id_str] = {"points": 0, "xp": 0, "roles": [], "tech_roles": []}
+        
+        before = data[user_id_str]["points"]
+        after = before + TOKEN_TRADE_PRICE
+        data[user_id_str]["points"] = after
         save_json(DATA_FILE, data)
+        await send_value_change_notice(user_id_str, "pt", before, after, "トークン出品報酬")
 
         await interaction.followup.send(
             f"✅ トークンを出品しました！\n"
@@ -589,10 +842,14 @@ class ApproveModal(discord.ui.Modal, title="✅ 承認"):
 
         data = load_json(DATA_FILE)
         if self.target_uid not in data:
-            data[self.target_uid] = {"points": 0, "xp": 0, "roles": []}
-        data[self.target_uid]["points"] += self.pts
+            data[self.target_uid] = {"points": 0, "xp": 0, "roles": [], "tech_roles": []}
+        
+        before = data[self.target_uid]["points"]
+        after = before + self.pts
+        data[self.target_uid]["points"] = after
         save_json(DATA_FILE, data)
         mark_image_used(self.img_url, self.target_uid, self.pts, str(self.comment))
+        await send_value_change_notice(self.target_uid, "pt", before, after, f"ポイント申請承認 {str(self.comment)}")
 
         pending = load_json(PENDING_FILE)
         if self.req_id in pending:
@@ -703,248 +960,122 @@ async def on_message(message: discord.Message):
             await message.author.send("⚠️ 先頭に数字を入力し、その後にコメントを書いてください。\n例：`150 先月分の通知です`")
             return
 
-        point_value = int(match.group(1))
-        user_comment = match.group(2).strip() or "（コメントなし）"
-
+        points = int(match.group(1))
+        comment = match.group(2).strip() or "（コメントなし）"
         image_url = message.attachments[0].url
+
         if is_image_used(image_url):
-            await message.author.send("🚫 この画像は既に使用されています。別の画像をお使いください。")
+            await message.author.send("⚠️ この画像はすでに使用されています。別の画像を使用してください。")
             return
 
+        req_id = f"PTS_REQ_{user_id}_{int(datetime.utcnow().timestamp())}"
         pending = load_json(PENDING_FILE)
-        request_id = f"{user_id}_{int(datetime.utcnow().timestamp())}"
-        pending[request_id] = {
+        pending[req_id] = {
             "user_id": user_id,
-            "user_name": str(message.author),
-            "points": point_value,
-            "comment": user_comment,
+            "points": points,
+            "comment": comment,
             "image_url": image_url,
-            "status": "pending",
-            "applied_at": datetime.utcnow().isoformat()
+            "submitted_at": datetime.utcnow().isoformat()
         }
         save_json(PENDING_FILE, pending)
 
-        del temp[user_id]
+        temp[user_id] = {"state": None}
         save_json(TEMP_DM_FILE, temp)
 
         admin_channel = bot.get_channel(ADMIN_CHANNEL_ID)
         if admin_channel:
-            embed = discord.Embed(
-                title="📩 ポイント申請（DM経由）",
-                description=f"申請者: {message.author.mention} / {message.author}\n申請ポイント: **{point_value} pt**\n📝 申請者コメント: {user_comment}",
-                color=0x2ECC71
-            )
+            embed = discord.Embed(title="📩 ポイント申請 届いてます！", color=0x3498DB)
+            embed.add_field(name="申請者", value=f"<@{user_id}>", inline=False)
+            embed.add_field(name="申請PT", value=f"**{points} pt**", inline=False)
+            embed.add_field(name="コメント", value=comment, inline=False)
             embed.set_image(url=image_url)
-            embed.set_footer(text=f"申請ID: {request_id}")
-            await admin_channel.send(embed=embed, view=ApproveDenyView(request_id, point_value, user_id, image_url, user_comment))
+            await admin_channel.send(embed=embed, view=ApproveDenyView(req_id, points, user_id, image_url, comment))
 
         await message.author.send(
             f"✅ 申請を送信しました！\n"
-            f"申請額: **{point_value} pt**\n"
-            f"コメント: {user_comment}\n"
-            f"管理者の承認をお待ちください。"
+            f"💳 申請PT: {points} pt\n"
+            f"📝 コメント: {comment}\n"
+            f"⏳ 管理者の承認をお待ちください。"
         )
         return
 
     # ⚡ XP申請
     if state == "waiting_xp_request":
         lines = message.content.strip().splitlines()
-        if len(lines) < 2 or not lines[0].strip() or not lines[1].strip():
+        if len(lines) < 2:
             await message.author.send(
-                "⚠️ フォーマットが違います。\n"
-                "1行目：Botのリンク\n"
+                "⚠️ フォーマットが正しくありません。\n"
+                "1行目：Botの招待リンク\n"
                 "2行目：使い方・機能の説明（必須）\n"
                 "3行目以降：追加メッセージ（任意）"
             )
             return
 
-        bot_link = lines[0].strip()
-        description = lines[1].strip()
-        extra_msg = "\n".join(lines[2:]).strip() if len(lines) > 2 else "（なし）"
+        link = lines[0].strip()
+        desc = lines[1].strip()
+        msg_extra = "\n".join(lines[2:]).strip() if len(lines) > 2 else "（なし）"
 
+        if not link.startswith("http"):
+            await message.author.send("⚠️ 1行目はURL（http～）を記入してください。")
+            return
+
+        req_id = f"XP_REQ_{user_id}_{int(datetime.utcnow().timestamp())}"
         pending = load_json(XP_PENDING_FILE)
-        request_id = f"XP_{user_id}_{int(datetime.utcnow().timestamp())}"
-        pending[request_id] = {
+        pending[req_id] = {
             "user_id": user_id,
-            "user_name": str(message.author),
-            "link": bot_link,
-            "description": description,
-            "message": extra_msg,
-            "applied_at": datetime.utcnow().isoformat()
+            "link": link,
+            "description": desc,
+            "message": msg_extra,
+            "submitted_at": datetime.utcnow().isoformat()
         }
         save_json(XP_PENDING_FILE, pending)
 
-        del temp[user_id]
+        temp[user_id] = {"state": None}
         save_json(TEMP_DM_FILE, temp)
 
         admin_channel = bot.get_channel(ADMIN_CHANNEL_ID)
         if admin_channel:
-            embed = discord.Embed(title="⚡ XP申請（Bot作成）", color=0x5865F2)
-            embed.add_field(name="申請者", value=f"{message.author.mention} / {message.author}", inline=False)
-            embed.add_field(name="🔗 Botリンク", value=bot_link, inline=False)
-            embed.add_field(name="📖 使い方・機能の説明", value=description, inline=False)
-            if extra_msg and extra_msg != "（なし）":
-                embed.add_field(name="📝 追加メッセージ", value=extra_msg, inline=False)
-            embed.set_footer(text=f"申請ID: {request_id}")
-            await admin_channel.send(embed=embed, view=XPGrantView(request_id, user_id, bot_link, description, extra_msg))
+            embed = discord.Embed(title="⚡ XP申請 届いてます！", color=0x9B59B6)
+            embed.add_field(name="申請者", value=f"<@{user_id}>", inline=False)
+            embed.add_field(name="Botリンク", value=link, inline=False)
+            embed.add_field(name="使い方説明", value=desc, inline=False)
+            if msg_extra != "（なし）":
+                embed.add_field(name="追加メッセージ", value=msg_extra, inline=False)
+            await admin_channel.send(embed=embed, view=XPGrantView(req_id, user_id, link, desc, msg_extra))
 
         await message.author.send(
             f"✅ XP申請を送信しました！\n"
-            f"🔗 Botリンク: {bot_link}\n"
-            f"📖 説明: {description}\n"
-            f"📝 メッセージ: {extra_msg}\n"
-            f"管理者の確認をお待ちください。"
+            f"📦 Botリンク: {link}\n"
+            f"📝 説明: {desc}\n"
+            f"⏳ 管理者がXP額を決定します。しばらくお待ちください。"
         )
         return
 
-    # 🏪 ロール購入
-    if state == "waiting_role_purchase":
-        role_name = message.content.strip()
-
-        is_normal = role_name in ROLE_PRICES
-        is_tech = role_name in TECH_ROLE_COST_XP
-        if not is_normal and not is_tech:
-            await message.author.send(
-                f"⚠️ 「{role_name}」はロール一覧に存在しません。\n"
-                "正確なロール名を入力してください。"
-            )
-            return
-
-        price = ROLE_PRICES[role_name] if is_normal else TECH_ROLE_COST_XP[role_name]
-        currency = "pt" if is_normal else "xp"
-        order = ROLE_ORDER if is_normal else TECH_ROLE_ORDER
-        data = load_json(DATA_FILE)
-        user_data = data.get(user_id, {"points": 0, "xp": 0, "roles": []})
-
-        guild_id = state_info.get("guild_id")
-        if not guild_id:
-            await message.author.send("⚠️ サーバー情報が取得できません。もう一度ロール購入ボタンからやり直してください。")
-            return
-
-        guild = await bot.fetch_guild(int(guild_id))
-        current_rank = await get_user_current_rank(guild, user_id) if is_normal else await get_user_current_tech_rank(guild, user_id)
-        target_index = order.index(role_name)
-
-        # 下位階級チェック
-        if target_index > 0:
-            required_rank = order[target_index - 1]
-            if current_rank != required_rank:
-                await message.author.send(
-                    f"⚠️ 購入条件を満たしていません。\n"
-                    f"「{role_name}」を購入するには**「{required_rank}」**の所持が必要です。\n"
-                    f"現在の階級: {current_rank or '未取得'}"
-                )
-                return
-
-        # 既所持チェック
-        if current_rank == role_name:
-            await message.author.send("⚠️ 既にこのロールを所持しています。")
-            return
-
-        # 残高チェック
-        balance = user_data.get("points", 0) if is_normal else user_data.get("xp", 0)
-        if balance < price:
-            await message.author.send(
-                f"⚠️ 残高が不足しています。\n"
-                f"必要: {price} {currency} / 所持: {balance} {currency}"
-            )
-            return
-
-        # 決済→ロール付与
-        paid = False
-        try:
-            if is_normal:
-                user_data["points"] -= price
-            else:
-                user_data["xp"] -= price
-            data[user_id] = user_data
-            save_json(DATA_FILE, data)
-            paid = True
-
-            member = await guild.fetch_member(int(user_id))
-            target_role = discord.utils.get(guild.roles, name=role_name)
-            if not target_role:
-                target_role = await guild.create_role(name=role_name, color=discord.Color.gold())
-
-            await member.add_roles(target_role)
-
-        except Exception as e:
-            if paid:
-                if is_normal:
-                    user_data["points"] += price
-                else:
-                    user_data["xp"] += price
-                data[user_id] = user_data
-                save_json(DATA_FILE, data)
-            await message.author.send(
-                f"⚠️ ロールの付与に失敗しました。\n"
-                f"原因: {str(e)}\n"
-                f"💳 {price} {currency} は返金されました。権限を確認してから再度お試しください。"
-            )
-            return
-
-        # 成功
-        user_data.setdefault("roles", []).append(role_name)
-        data[user_id] = user_data
-        save_json(DATA_FILE, data)
-
-        del temp[user_id]
-        save_json(TEMP_DM_FILE, temp)
-
-        new_balance = user_data["points"] if is_normal else user_data["xp"]
-        await message.author.send(
-            f"🎉 「{role_name}」を購入しました！\n"
-            f"💳 支払い: {price} {currency}\n"
-            f"💰 残高: {new_balance} {currency}"
-        )
-        return
-
-    await bot.process_commands(message)
-
-
-# ========== ✅ 管理者用コマンド：パネル設置 ==========
-@bot.command(name="setup")
-async def setup_panel(ctx):
-    if not is_admin(ctx.author):
-        await ctx.send("❌ TISN管理者ロールが必要です。", delete_after=5)
-        return
-
-    embed = discord.Embed(
-        title="🏅 TISN ポイ活・トークン売買システム",
-        description=(
-            "下のボタンから各機能を起動してください。\n"
-            "✅ すべての操作は**DM経由で完全非公開**で行われます\n"
-            "✅ 公開チャンネルに個人情報やトークンは一切表示されません"
-        ),
-        color=0xFFD700
+    # ✅ その他のDMメッセージ（状態なし）
+    await message.author.send(
+        "👋 メインパネルから操作してください！\n"
+        "`!panel` と入力するとボタン一覧が表示されます。"
     )
-    await ctx.send(embed=embed, view=MainPanelView())
-    await ctx.message.delete()
 
 
-# ========== ✅ エラー制御 ==========
-@bot.event
-async def on_command_error(ctx, error):
-    if isinstance(error, commands.CommandNotFound):
-        return
-    await ctx.send(f"⚠️ エラー: {str(error)}", delete_after=10)
-
-
-# ========== ✅ 起動時処理 ==========
-@bot.event
-async def on_ready():
-    bot.add_view(MainPanelView())
-    if not daily_ranking_task.is_running():
-        daily_ranking_task.start()
-    print(f"✅ Bot起動完了: {bot.user}")
-    print(f"✅ 管理者ロール: {ADMIN_ROLE_NAME}")
-    print(f"✅ ランキングch: {RANKING_CHANNEL_ID}")
-    print(f"✅ 接頭辞: {COMMAND_PREFIX}")
+# ========== ✅ メインパネル表示コマンド ==========
+@bot.command(name="panel")
+async def show_main_panel(ctx):
+    await ctx.send("## 🎛️ TISN 操作パネル", view=MainPanelView())
 
 
 # ========== ✅ Bot起動 ==========
-BOT_TOKEN = os.environ.get("DISCORD_BOT_TOKEN") or os.environ.get("TOKEN")
-if not BOT_TOKEN:
-    raise RuntimeError("環境変数に DISCORD_BOT_TOKEN または TOKEN を設定してください。")
+@bot.event
+async def on_ready():
+    print(f"✅ ログイン完了: {bot.user}")
+    daily_ranking_task.start()
+    await bot.change_presence(activity=discord.Game(name="TISN ポイント管理システム"))
 
-bot.run(BOT_TOKEN)
+
+# ========== ✅ Botトークンで起動 ==========
+if __name__ == "__main__":
+    TOKEN = os.environ.get("DISCORD_BOT_TOKEN")
+    if not TOKEN:
+        print("⚠️ 環境変数 DISCORD_BOT_TOKEN を設定してください。")
+    else:
+        bot.run(TOKEN)
