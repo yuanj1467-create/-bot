@@ -54,8 +54,9 @@ TECH_ROLE_COST_XP = {
     "高度技術班": 5000,
     "技術班最高幹部": 30000
 }
+
 # ==================================================
-# ✅ 権限ロール設定（新規追加）
+# ✅ 権限ロール設定（個別購入可・前の階級不要）
 # ==================================================
 PERM_ROLE_PRICES = {
     "【権限】メッセージ管理": 30000,
@@ -64,6 +65,7 @@ PERM_ROLE_PRICES = {
     "【権限】キック": 100000,
     "【権限】BAN": 300000
 }
+
 # ✅ 管理者が選べるXP額一覧
 XP_OPTIONS = [0, 100, 150, 200, 300, 500, 750, 1000, 2000, 5000, 10000]
 
@@ -75,6 +77,80 @@ intents.dm_messages = True
 intents.members = True
 
 bot = commands.Bot(command_prefix=COMMAND_PREFIX, intents=intents)
+
+
+# ========== ✅ 暗号化キー管理 ==========
+def get_or_create_cipher():
+    key_env = os.environ.get("TOKEN_ENCRYPT_KEY")
+    if key_env:
+        key = key_env.encode()
+    else:
+        key_file = Path(".token_key")
+        if key_file.exists():
+            key = key_file.read_bytes()
+        else:
+            key = Fernet.generate_key()
+            key_file.write_bytes(key)
+            print(f"🔑 新規暗号化キー生成: {key.decode()}")
+            print("⚠️ このキーを失うと保存中のデータは復元できません！")
+    return Fernet(key)
+
+CIPHER = get_or_create_cipher()
+
+def encrypt_token(raw_token: str) -> str:
+    return CIPHER.encrypt(raw_token.encode()).decode()
+
+def decrypt_token(encrypted_token: str) -> str:
+    return CIPHER.decrypt(encrypted_token.encode()).decode()
+
+
+# ========== ✅ データファイル管理（PT・XPは暗号化版） ==========
+DATA_FILE = Path("points_data_encrypted.json")
+IMAGE_LOG_FILE = Path("image_log.json")
+PENDING_FILE = Path("pending_requests.json")
+XP_PENDING_FILE = Path("xp_pending.json")
+TEMP_DM_FILE = Path("temp_dm_state.json")
+TOKEN_MARKET_FILE = Path("token_market_encrypted.json")
+
+# ✅ 暗号化して保存
+def save_json_encrypted(path, data):
+    json_text = json.dumps(data, ensure_ascii=False, indent=2)
+    encrypted = CIPHER.encrypt(json_text.encode("utf-8")).decode()
+    path.write_text(encrypted, encoding="utf-8")
+
+# ✅ 復号して読み込み
+def load_json_encrypted(path):
+    if not path.exists():
+        return {}
+    encrypted_text = path.read_text(encoding="utf-8").strip()
+    if not encrypted_text:
+        return {}
+    try:
+        decrypted = CIPHER.decrypt(encrypted_text.encode("utf-8")).decode("utf-8")
+        return json.loads(decrypted)
+    except Exception as e:
+        print(f"⚠️ 復号エラー {path.name}: {e}")
+        print("💡 暗号化キーが正しいか確認してください！")
+        return {}
+
+# ✅ 暗号化しない通常ファイル
+def load_json(path):
+    if not path.exists():
+        return {}
+    text = path.read_text(encoding="utf-8").strip()
+    return json.loads(text) if text else {}
+
+def save_json(path, data):
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+# ✅ 初期ファイル作成
+for f in [IMAGE_LOG_FILE, PENDING_FILE, XP_PENDING_FILE, TEMP_DM_FILE]:
+    if not f.exists():
+        f.write_text("{}", encoding="utf-8")
+if not DATA_FILE.exists():
+    save_json_encrypted(DATA_FILE, {})
+if not TOKEN_MARKET_FILE.exists():
+    TOKEN_MARKET_FILE.write_text("{}", encoding="utf-8")
 
 
 # ==================================================
@@ -123,11 +199,7 @@ async def send_value_change_notice(user_id: str, mode: str, before: int, after: 
 # ==================================================
 async def build_ranking_embed():
     now = datetime.now(JST)
-    DATA_FILE_PATH = Path("points_data.json")
-    if not DATA_FILE_PATH.exists():
-        return discord.Embed(title="🏆 TISNランキング", description="📭 データが存在しません。", color=0xFFD700)
-    
-    data = json.loads(DATA_FILE_PATH.read_text(encoding="utf-8"))
+    data = load_json_encrypted(DATA_FILE)
     if not data:
         return discord.Embed(title="🏆 TISNランキング", description="📭 まだデータがありません。", color=0xFFD700)
 
@@ -180,11 +252,9 @@ async def daily_ranking_task():
     now = datetime.now(JST)
     if now.hour != 0:
         return
-
     ranking_channel = bot.get_channel(RANKING_CHANNEL_ID)
     if not ranking_channel:
         return
-
     embed = await build_ranking_embed()
     await ranking_channel.send(embed=embed)
 
@@ -198,7 +268,7 @@ async def edit_all_pt(ctx, amount: int, *, reason: str = "理由なし"):
         await ctx.send("❌ TISN管理者ロールが必要です。", delete_after=5)
         return
 
-    data = load_json(DATA_FILE)
+    data = load_json_encrypted(DATA_FILE)
     if not data:
         await ctx.send("📭 ユーザーデータが存在しません。", delete_after=5)
         return
@@ -212,7 +282,7 @@ async def edit_all_pt(ctx, amount: int, *, reason: str = "理由なし"):
         await send_value_change_notice(user_id, "pt", before, after, reason)
         count += 1
 
-    save_json(DATA_FILE, data)
+    save_json_encrypted(DATA_FILE, data)
     await ctx.send(f"✅ 全{count}名のPTを {amount:+d} PT に変更しました。\n📝 理由：{reason}", delete_after=15)
 
 
@@ -225,7 +295,7 @@ async def edit_all_xp(ctx, amount: int, *, reason: str = "理由なし"):
         await ctx.send("❌ TISN管理者ロールが必要です。", delete_after=5)
         return
 
-    data = load_json(DATA_FILE)
+    data = load_json_encrypted(DATA_FILE)
     if not data:
         await ctx.send("📭 ユーザーデータが存在しません。", delete_after=5)
         return
@@ -239,12 +309,12 @@ async def edit_all_xp(ctx, amount: int, *, reason: str = "理由なし"):
         await send_value_change_notice(user_id, "xp", before, after, reason)
         count += 1
 
-    save_json(DATA_FILE, data)
+    save_json_encrypted(DATA_FILE, data)
     await ctx.send(f"✅ 全{count}名のXPを {amount:+d} XP に変更しました。\n📝 理由：{reason}", delete_after=15)
 
 
 # ==================================================
-# ✅ ✅ 追加：管理者用 個別ユーザー PT操作
+# ✅ 管理者用 個別ユーザー PT操作
 # ==================================================
 @bot.command(name="edit_pt")
 async def edit_pt(ctx, member: discord.Member, amount: int, *, reason: str = "理由なし"):
@@ -252,7 +322,7 @@ async def edit_pt(ctx, member: discord.Member, amount: int, *, reason: str = "�
         await ctx.send("❌ TISN管理者ロールが必要です。", delete_after=5)
         return
 
-    data = load_json(DATA_FILE)
+    data = load_json_encrypted(DATA_FILE)
     user_id = str(member.id)
     if user_id not in data:
         data[user_id] = {"points": 0, "xp": 0, "roles": [], "tech_roles": []}
@@ -260,7 +330,7 @@ async def edit_pt(ctx, member: discord.Member, amount: int, *, reason: str = "�
     before = data[user_id].get("points", 0)
     after = before + amount
     data[user_id]["points"] = after
-    save_json(DATA_FILE, data)
+    save_json_encrypted(DATA_FILE, data)
 
     await send_value_change_notice(user_id, "pt", before, after, reason)
     await ctx.send(
@@ -271,7 +341,7 @@ async def edit_pt(ctx, member: discord.Member, amount: int, *, reason: str = "�
 
 
 # ==================================================
-# ✅ ✅ 追加：管理者用 個別ユーザー XP操作
+# ✅ 管理者用 個別ユーザー XP操作
 # ==================================================
 @bot.command(name="edit_xp")
 async def edit_xp(ctx, member: discord.Member, amount: int, *, reason: str = "理由なし"):
@@ -279,7 +349,7 @@ async def edit_xp(ctx, member: discord.Member, amount: int, *, reason: str = "�
         await ctx.send("❌ TISN管理者ロールが必要です。", delete_after=5)
         return
 
-    data = load_json(DATA_FILE)
+    data = load_json_encrypted(DATA_FILE)
     user_id = str(member.id)
     if user_id not in data:
         data[user_id] = {"points": 0, "xp": 0, "roles": [], "tech_roles": []}
@@ -287,7 +357,7 @@ async def edit_xp(ctx, member: discord.Member, amount: int, *, reason: str = "�
     before = data[user_id].get("xp", 0)
     after = before + amount
     data[user_id]["xp"] = after
-    save_json(DATA_FILE, data)
+    save_json_encrypted(DATA_FILE, data)
 
     await send_value_change_notice(user_id, "xp", before, after, reason)
     await ctx.send(
@@ -298,7 +368,7 @@ async def edit_xp(ctx, member: discord.Member, amount: int, *, reason: str = "�
 
 
 # ==================================================
-# ✅ ✅ 追加：管理者用 ロール指定 PT一括変更
+# ✅ 管理者用 ロール指定 PT一括変更
 # ==================================================
 @bot.command(name="edit_pt_role")
 async def edit_pt_role(ctx, role_name: str, amount: int, *, reason: str = "理由なし"):
@@ -312,7 +382,7 @@ async def edit_pt_role(ctx, role_name: str, amount: int, *, reason: str = "理�
         await ctx.send(f"❌ ロール「{role_name}」が見つかりません。", delete_after=10)
         return
 
-    data = load_json(DATA_FILE)
+    data = load_json_encrypted(DATA_FILE)
     count = 0
     for member in target_role.members:
         user_id = str(member.id)
@@ -324,7 +394,7 @@ async def edit_pt_role(ctx, role_name: str, amount: int, *, reason: str = "理�
         await send_value_change_notice(user_id, "pt", before, after, reason)
         count += 1
 
-    save_json(DATA_FILE, data)
+    save_json_encrypted(DATA_FILE, data)
     await ctx.send(
         f"✅ ロール「{role_name}」のメンバー {count}名 のPTを {amount:+d} PT に変更しました。\n"
         f"📝 理由：{reason}",
@@ -333,7 +403,7 @@ async def edit_pt_role(ctx, role_name: str, amount: int, *, reason: str = "理�
 
 
 # ==================================================
-# ✅ ✅ 追加：管理者用 ロール指定 XP一括変更
+# ✅ 管理者用 ロール指定 XP一括変更
 # ==================================================
 @bot.command(name="edit_xp_role")
 async def edit_xp_role(ctx, role_name: str, amount: int, *, reason: str = "理由なし"):
@@ -347,7 +417,7 @@ async def edit_xp_role(ctx, role_name: str, amount: int, *, reason: str = "理�
         await ctx.send(f"❌ ロール「{role_name}」が見つかりません。", delete_after=10)
         return
 
-    data = load_json(DATA_FILE)
+    data = load_json_encrypted(DATA_FILE)
     count = 0
     for member in target_role.members:
         user_id = str(member.id)
@@ -359,7 +429,7 @@ async def edit_xp_role(ctx, role_name: str, amount: int, *, reason: str = "理�
         await send_value_change_notice(user_id, "xp", before, after, reason)
         count += 1
 
-    save_json(DATA_FILE, data)
+    save_json_encrypted(DATA_FILE, data)
     await ctx.send(
         f"✅ ロール「{role_name}」のメンバー {count}名 のXPを {amount:+d} XP に変更しました。\n"
         f"📝 理由：{reason}",
@@ -367,7 +437,7 @@ async def edit_xp_role(ctx, role_name: str, amount: int, *, reason: str = "理�
     )
 
 
-# ========== ✅ ✅ 追加：ログインボーナス管理 ==========
+# ========== ✅ ログインボーナス管理 ==========
 LOGIN_BONUS_FILE = Path("login_bonus.json")
 if not LOGIN_BONUS_FILE.exists():
     LOGIN_BONUS_FILE.write_text("{}", encoding="utf-8")
@@ -379,53 +449,10 @@ def save_login_data(data):
     LOGIN_BONUS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 def calc_login_bonus_amount(streak_days: int) -> int:
-    """連続日数からボーナス額を計算：初日=10, 以降+5/日, 上限100"""
     base = 10
     bonus = base + (streak_days * 5)
     return min(bonus, 100)
 
-
-# ========== ✅ 暗号化キー管理 ==========
-def get_or_create_cipher():
-    key_env = os.environ.get("TOKEN_ENCRYPT_KEY")
-    if key_env:
-        key = key_env.encode()
-    else:
-        key_file = Path(".token_key")
-        if key_file.exists():
-            key = key_file.read_bytes()
-        else:
-            key = Fernet.generate_key()
-            key_file.write_bytes(key)
-            print(f"🔑 新規暗号化キー生成: {key.decode()}")
-            print("⚠️ このキーを失うと保存中のトークンは復元できません！")
-    return Fernet(key)
-
-CIPHER = get_or_create_cipher()
-
-def encrypt_token(raw_token: str) -> str:
-    return CIPHER.encrypt(raw_token.encode()).decode()
-
-def decrypt_token(encrypted_token: str) -> str:
-    return CIPHER.decrypt(encrypted_token.encode()).decode()
-
-# ========== ✅ データファイル管理 ==========
-DATA_FILE = Path("points_data.json")
-IMAGE_LOG_FILE = Path("image_log.json")
-PENDING_FILE = Path("pending_requests.json")
-XP_PENDING_FILE = Path("xp_pending.json")
-TEMP_DM_FILE = Path("temp_dm_state.json")
-TOKEN_MARKET_FILE = Path("token_market_encrypted.json")
-
-for f in [DATA_FILE, IMAGE_LOG_FILE, PENDING_FILE, XP_PENDING_FILE, TEMP_DM_FILE, TOKEN_MARKET_FILE]:
-    if not f.exists():
-        f.write_text("{}", encoding="utf-8")
-
-def load_json(path):
-    return json.loads(path.read_text(encoding="utf-8"))
-
-def save_json(path, data):
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 def is_image_used(image_url: str) -> bool:
     return image_url in load_json(IMAGE_LOG_FILE)
@@ -440,9 +467,11 @@ def mark_image_used(image_url: str, user_id: str, points: int, comment: str = ""
     }
     save_json(IMAGE_LOG_FILE, log)
 
+
 # ========== ✅ 管理者判定 ==========
 def is_admin(user):
     return any(role.name == ADMIN_ROLE_NAME for role in getattr(user, "roles", []))
+
 
 # ✅ 通常階級の現在位置を取得
 async def get_user_current_rank(guild, user_id):
@@ -476,27 +505,6 @@ def get_next_rank_info(current_rank, rank_order, price_table):
     next_rank = rank_order[current_index + 1]
     return next_rank, price_table[next_rank]
 
-# ✅ 階級表示フォーマット
-def build_rank_progress(order, current_rank):
-    lines = []
-    reversed_order = list(reversed(order))
-    
-    if current_rank is None:
-        for idx, name in enumerate(reversed_order):
-            lines.append(f"{name} 👈next" if idx == len(reversed_order) - 1 else name)
-        return "\n".join(lines)
-    
-    current_index = reversed_order.index(current_rank)
-    for idx, name in enumerate(reversed_order):
-        if name == current_rank:
-            lines.append(f"**{name} 👈now**")
-        elif idx == current_index - 1:
-            lines.append(f"{name} 👈next")
-        elif idx > current_index:
-            lines.append(f"~~{name}~~")
-        else:
-            lines.append(f"{name}")
-    return "\n".join(lines)
 
 # ========== ✅ トークン有効性確認 ==========
 async def verify_real_discord_token(token: str):
@@ -521,6 +529,7 @@ async def verify_real_discord_token(token: str):
     except Exception as e:
         return False, f"❌ 通信エラー: {str(e)}", None
 
+
 # ========== ✅ 警告文 ==========
 WARNING_MESSAGE = (
     "⚠️⚠️⚠️ **絶対に自分の本アカウントのトークンを入力しないでください！**⚠️⚠️⚠️\n"
@@ -528,6 +537,7 @@ WARNING_MESSAGE = (
     "**捨てアカウント・テスト用アカウント**のトークンだけを使用してください。\n"
     "本アカウントのトークンを入力した場合の損害については一切責任を負いません。"
 )
+
 
 # ========== ✅ XP付与ボタン ==========
 class XPGrantView(discord.ui.View):
@@ -549,14 +559,14 @@ class XPGrantView(discord.ui.View):
             return
         xp_amount = int(select.values[0])
 
-        data = load_json(DATA_FILE)
+        data = load_json_encrypted(DATA_FILE)
         if self.target_user_id not in data:
             data[self.target_user_id] = {"points": 0, "xp": 0, "roles": [], "tech_roles": []}
         
         before = data[self.target_user_id].get("xp", 0)
         after = before + xp_amount
         data[self.target_user_id]["xp"] = after
-        save_json(DATA_FILE, data)
+        save_json_encrypted(DATA_FILE, data)
         await send_value_change_notice(self.target_user_id, "xp", before, after, "申請による付与")
 
         pending = load_json(XP_PENDING_FILE)
@@ -595,7 +605,7 @@ class PromoteConfirmView(discord.ui.View):
     @discord.ui.button(label="✅ 昇格を確定", style=discord.ButtonStyle.green)
     async def confirm_promote(self, interaction: discord.Interaction, button: discord.ui.Button):
         user_id = str(interaction.user.id)
-        data = load_json(DATA_FILE)
+        data = load_json_encrypted(DATA_FILE)
         guild = interaction.guild
         member = await guild.fetch_member(interaction.user.id)
         user_data = data.setdefault(user_id, {"points": 0, "xp": 0, "roles": [], "tech_roles": []})
@@ -610,7 +620,7 @@ class PromoteConfirmView(discord.ui.View):
         before_pt = user_data["points"]
         after_pt = before_pt - self.cost_pt
         user_data["points"] = after_pt
-        save_json(DATA_FILE, data)
+        save_json_encrypted(DATA_FILE, data)
         await send_value_change_notice(user_id, "pt", before_pt, after_pt, f"階級昇格：{self.next_rank} へ")
 
         role = discord.utils.get(guild.roles, name=self.next_rank)
@@ -637,7 +647,7 @@ class TechPromoteConfirmView(discord.ui.View):
     @discord.ui.button(label="✅ 昇格を確定", style=discord.ButtonStyle.green)
     async def confirm_tech_promote(self, interaction: discord.Interaction, button: discord.ui.Button):
         user_id = str(interaction.user.id)
-        data = load_json(DATA_FILE)
+        data = load_json_encrypted(DATA_FILE)
         guild = interaction.guild
         member = await guild.fetch_member(interaction.user.id)
         user_data = data.setdefault(user_id, {"points": 0, "xp": 0, "roles": [], "tech_roles": []})
@@ -652,7 +662,7 @@ class TechPromoteConfirmView(discord.ui.View):
         before_xp = user_data["xp"]
         after_xp = before_xp - self.cost_xp
         user_data["xp"] = after_xp
-        save_json(DATA_FILE, data)
+        save_json_encrypted(DATA_FILE, data)
         await send_value_change_notice(user_id, "xp", before_xp, after_xp, f"技術班階級昇格：{self.next_rank} へ")
 
         role = discord.utils.get(guild.roles, name=self.next_rank)
@@ -669,12 +679,70 @@ class TechPromoteConfirmView(discord.ui.View):
         await interaction.response.edit_message(content="❌ 昇格をキャンセルしました。", view=None)
 
 
-# ========== ✅ メイン操作パネル（✅ ログインボーナス追加） ==========
+# ========== ✅ 権限ロール購入用選択画面 ==========
+class PermRoleBuyView(discord.ui.View):
+    def __init__(self, options):
+        super().__init__(timeout=180)
+        self.add_item(PermRoleSelect(options))
+
+class PermRoleSelect(discord.ui.Select):
+    def __init__(self, options):
+        super().__init__(placeholder="購入する権限ロールを選択", options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        role_name = self.values[0]
+        price = PERM_ROLE_PRICES[role_name]
+        user_id = str(interaction.user.id)
+        guild = interaction.guild
+        member = await guild.fetch_member(interaction.user.id)
+        data = load_json_encrypted(DATA_FILE)
+        user_data = data.setdefault(user_id, {"points": 0, "xp": 0, "roles": [], "tech_roles": []})
+
+        # 所持確認
+        if any(r.name == role_name for r in member.roles):
+            await interaction.response.send_message(f"⚠️ すでに「{role_name}」を所持しています。", ephemeral=True)
+            return
+
+        # PT確認
+        before_pt = user_data["points"]
+        if before_pt < price:
+            await interaction.response.send_message(
+                f"⚠️ PTが不足しています。\n必要: {price} PT / 所持: {before_pt} PT\nあと{price - before_pt}PT 足りません。",
+                ephemeral=True
+            )
+            return
+
+        # 確定
+        after_pt = before_pt - price
+        user_data["points"] = after_pt
+        save_json_encrypted(DATA_FILE, data)
+        await send_value_change_notice(user_id, "pt", before_pt, after_pt, f"権限ロール購入：{role_name}")
+
+        # ロール付与
+        role = discord.utils.get(guild.roles, name=role_name)
+        if role:
+            await member.add_roles(role)
+            await interaction.response.send_message(
+                f"🎉 購入完了！「{role_name}」が付与されました！\n"
+                f"💳 支払い: {price} PT\n"
+                f"💰 残高: {after_pt} PT",
+                ephemeral=True
+            )
+        else:
+            await interaction.response.send_message(
+                f"⚠️ サーバーに「{role_name}」ロールが見つかりません。\n"
+                f"管理者に作成してもらってから再度お試しください。\n"
+                f"💳 支払いは保留中です（PTは減っていません）",
+                ephemeral=True
+            )
+
+
+# ========== ✅ メイン操作パネル ==========
 class MainPanelView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    # ✅ ✅ 追加：ログインボーナスボタン
+    # ✅ ログインボーナス
     @discord.ui.button(label="🎁 ログインボーナス", style=discord.ButtonStyle.success, custom_id="panel_login_bonus")
     async def btn_login_bonus(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
@@ -684,42 +752,35 @@ class MainPanelView(discord.ui.View):
 
         login_data = load_login_data()
         user_login = login_data.setdefault(user_id, {"last_date": None, "streak": 0})
-
         last_date = user_login.get("last_date")
 
-        # 本日すでに受取済み
         if last_date == today:
             await interaction.followup.send(
-                f"⚠️ 今日はすでにログインボーナスを受け取っています！\n"
-                f"📊 連続日数: {user_login['streak']} 日",
+                f"⚠️ 今日はすでにログインボーナスを受け取っています！\n📊 連続日数: {user_login['streak']} 日",
                 ephemeral=True
             )
             return
 
-        # 連続判定
         if last_date == yesterday:
             user_login["streak"] += 1
         else:
-            user_login["streak"] = 0  # 新規 or 途切れ → リセット
+            user_login["streak"] = 0
 
         streak = user_login["streak"]
         bonus_pt = calc_login_bonus_amount(streak)
 
-        # PT付与
-        data = load_json(DATA_FILE)
+        data = load_json_encrypted(DATA_FILE)
         if user_id not in data:
             data[user_id] = {"points": 0, "xp": 0, "roles": [], "tech_roles": []}
         before = data[user_id]["points"]
         after = before + bonus_pt
         data[user_id]["points"] = after
-        save_json(DATA_FILE, data)
+        save_json_encrypted(DATA_FILE, data)
 
-        # ログイン日更新
         user_login["last_date"] = today
         login_data[user_id] = user_login
         save_login_data(login_data)
 
-        # 結果表示
         detail_text = f"10 + {streak}×5 = {bonus_pt} PT" if streak > 0 else f"10 PT"
         if bonus_pt >= 100:
             detail_text += " 🎉 上限に達しました！"
@@ -770,15 +831,14 @@ class MainPanelView(discord.ui.View):
     async def btn_token_buy(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
         user_id = str(interaction.user.id)
-        data = load_json(DATA_FILE)
+        data = load_json_encrypted(DATA_FILE)
         market = load_json(TOKEN_MARKET_FILE)
         user_data = data.get(user_id, {"points": 0})
         user_points = user_data.get("points", 0)
 
         if user_points < TOKEN_TRADE_PRICE:
             await interaction.followup.send(
-                f"⚠️ ポイントが不足しています。\n"
-                f"必要: {TOKEN_TRADE_PRICE} pt / 所持: {user_points} pt",
+                f"⚠️ ポイントが不足しています。\n必要: {TOKEN_TRADE_PRICE} pt / 所持: {user_points} pt",
                 ephemeral=True
             )
             return
@@ -799,8 +859,7 @@ class MainPanelView(discord.ui.View):
         before_pt = user_data["points"]
         after_pt = before_pt - TOKEN_TRADE_PRICE
         user_data["points"] = after_pt
-        data[user_id] = user_data
-        save_json(DATA_FILE, data)
+        save_json_encrypted(DATA_FILE, data)
         await send_value_change_notice(user_id, "pt", before_pt, after_pt, "トークン購入")
         save_json(TOKEN_MARKET_FILE, market)
 
@@ -810,7 +869,7 @@ class MainPanelView(discord.ui.View):
                 f"💳 支払い: -{TOKEN_TRADE_PRICE} pt\n"
                 f"👤 出品者アカウント: {token_info['owner_username']}\n"
                 f"🔑 トークン: `{raw_token}`\n"
-                f"💰 残高: {user_data['points']} pt\n\n"
+                f"💰 残高: {after_pt} pt\n\n"
                 "⚠️ このトークンは絶対に他人に見せないでください！"
             )
             await interaction.followup.send("✅ DMにトークンを送信しました！", ephemeral=True)
@@ -818,7 +877,7 @@ class MainPanelView(discord.ui.View):
             user_data["points"] += TOKEN_TRADE_PRICE
             data[user_id] = user_data
             market[token_id] = token_info
-            save_json(DATA_FILE, data)
+            save_json_encrypted(DATA_FILE, data)
             await interaction.followup.send(
                 "❌ DMの送信に失敗しました。DMを受信できるよう設定してから再試行してください。",
                 ephemeral=True
@@ -831,7 +890,7 @@ class MainPanelView(discord.ui.View):
                 s_before = data[token_info["seller_id"]]["points"]
                 s_after = s_before + TOKEN_TRADE_PRICE
                 data[token_info["seller_id"]]["points"] = s_after
-                save_json(DATA_FILE, data)
+                save_json_encrypted(DATA_FILE, data)
                 await send_value_change_notice(token_info["seller_id"], "pt", s_before, s_after, "トークンが購入された報酬")
                 await seller.send(
                     f"📢 あなたのトークン（{token_info['owner_username']}）が購入されました！\n"
@@ -865,20 +924,23 @@ class MainPanelView(discord.ui.View):
     @discord.ui.button(label="⚡ XP確認", style=discord.ButtonStyle.blurple, custom_id="panel_check_xp")
     async def btn_check_xp(self, interaction: discord.Interaction, button: discord.ui.Button):
         user_id = str(interaction.user.id)
-        data = load_json(DATA_FILE)
+        data = load_json_encrypted(DATA_FILE)
         xp = data.get(user_id, {}).get("xp", 0)
-        await interaction.response.send_message(
-            f"⚡ {interaction.user.mention} のXP: **{xp} xp**",
-            ephemeral=True
-        )
+        await interaction.response.send_message(f"⚡ {interaction.user.mention} のXP: **{xp} xp**", ephemeral=True)
 
-    # ✅ 通常階級 昇格ボタン
+    @discord.ui.button(label="💰 pt確認", style=discord.ButtonStyle.primary, custom_id="panel_check_point")
+    async def btn_check_point(self, interaction: discord.Interaction, button: discord.ui.Button):
+        user_id = str(interaction.user.id)
+        data = load_json_encrypted(DATA_FILE)
+        points = data.get(user_id, {}).get("points", 0)
+        await interaction.response.send_message(f"💰 {interaction.user.mention} のポイント: **{points} pt**", ephemeral=True)
+
     @discord.ui.button(label="🎖️ 階級昇格(pt)", style=discord.ButtonStyle.green, custom_id="panel_promote_rank")
     async def btn_promote_rank(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
         user_id = str(interaction.user.id)
-        data = load_json(DATA_FILE)
+        data = load_json_encrypted(DATA_FILE)
         user_data = data.setdefault(user_id, {"points": 0, "xp": 0, "roles": [], "tech_roles": []})
 
         current_rank = await get_user_current_rank(guild, interaction.user.id)
@@ -916,7 +978,7 @@ class MainPanelView(discord.ui.View):
         await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
         user_id = str(interaction.user.id)
-        data = load_json(DATA_FILE)
+        data = load_json_encrypted(DATA_FILE)
         user_data = data.setdefault(user_id, {"points": 0, "xp": 0, "roles": [], "tech_roles": []})
 
         current_rank = await get_user_current_tech_rank(guild, interaction.user.id)
@@ -948,22 +1010,13 @@ class MainPanelView(discord.ui.View):
             ephemeral=True
         )
 
-    @discord.ui.button(label="💰 pt確認", style=discord.ButtonStyle.primary, custom_id="panel_check_point")
-    async def btn_check_point(self, interaction: discord.Interaction, button: discord.ui.Button):
-        user_id = str(interaction.user.id)
-        data = load_json(DATA_FILE)
-        points = data.get(user_id, {}).get("points", 0)
-        await interaction.response.send_message(
-            f"💰 {interaction.user.mention} のポイント: **{points} pt**",
-            ephemeral=True
-        )
-    # ✅ ✅ 追加：権限ロール個別購入ボタン
+    # ✅ 権限ロール購入ボタン
     @discord.ui.button(label="🔐 権限ロールを購入", style=discord.ButtonStyle.grey, custom_id="panel_buy_perm")
     async def btn_buy_perm(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
         user_id = str(interaction.user.id)
         guild = interaction.guild
-        data = load_json(DATA_FILE)
+        data = load_json_encrypted(DATA_FILE)
         user_data = data.setdefault(user_id, {"points": 0, "xp": 0, "roles": [], "tech_roles": [], "perm_roles": []})
         user_pt = user_data.get("points", 0)
 
@@ -992,63 +1045,6 @@ class MainPanelView(discord.ui.View):
         embed = discord.Embed(title="🔐 権限ロール購入", description="\n".join(lines), color=0x95A5A6)
         await interaction.followup.send(embed=embed, view=PermRoleBuyView(select_opts), ephemeral=True)
 
-
-# ========== ✅ 権限ロール購入用選択画面 ==========
-class PermRoleBuyView(discord.ui.View):
-    def __init__(self, options):
-        super().__init__(timeout=180)
-        self.add_item(PermRoleSelect(options))
-
-class PermRoleSelect(discord.ui.Select):
-    def __init__(self, options):
-        super().__init__(placeholder="購入する権限ロールを選択", options=options)
-
-    async def callback(self, interaction: discord.Interaction):
-        role_name = self.values[0]
-        price = PERM_ROLE_PRICES[role_name]
-        user_id = str(interaction.user.id)
-        guild = interaction.guild
-        member = await guild.fetch_member(interaction.user.id)
-        data = load_json(DATA_FILE)
-        user_data = data.setdefault(user_id, {"points": 0, "xp": 0, "roles": [], "tech_roles": []})
-
-        # 所持確認
-        if any(r.name == role_name for r in member.roles):
-            await interaction.response.send_message(f"⚠️ すでに「{role_name}」を所持しています。", ephemeral=True)
-            return
-
-        # PT確認
-        before_pt = user_data["points"]
-        if before_pt < price:
-            await interaction.response.send_message(
-                f"⚠️ PTが不足しています。\n必要: {price} PT / 所持: {before_pt} PT\nあと{price - before_pt}PT 足りません。",
-                ephemeral=True
-            )
-            return
-
-        # 確定
-        after_pt = before_pt - price
-        user_data["points"] = after_pt
-        save_json(DATA_FILE, data)
-        await send_value_change_notice(user_id, "pt", before_pt, after_pt, f"権限ロール購入：{role_name}")
-
-        # ロール付与
-        role = discord.utils.get(guild.roles, name=role_name)
-        if role:
-            await member.add_roles(role)
-            await interaction.response.send_message(
-                f"🎉 購入完了！「{role_name}」が付与されました！\n"
-                f"💳 支払い: {price} PT\n"
-                f"💰 残高: {after_pt} PT",
-                ephemeral=True
-            )
-        else:
-            await interaction.response.send_message(
-                f"⚠️ サーバーに「{role_name}」ロールが見つかりません。\n"
-                f"管理者に作成してもらってから再度お試しください。\n"
-                f"💳 支払いは保留中です（PTは減っていません）",
-                ephemeral=True
-            )
 
 # ========== ✅ トークン出品フロー ==========
 class TokenSellConfirmView(discord.ui.View):
@@ -1094,13 +1090,13 @@ class TokenSellInputModal(discord.ui.Modal, title="トークンを出品"):
             "encrypted_token": encrypted_token,
             "seller_id": str(interaction.user.id),
             "seller_name": str(interaction.user),
-            "owner_username": f"{user_info.get('username')}#{user_info.get('discriminator', '0000')}",
+            "owner_username": f"{user_info.get('username', 'Unknown')}#{user_info.get('discriminator', '0000')}",
             "owner_id": str(user_info.get("id")),
             "listed_at": datetime.utcnow().isoformat()
         }
         save_json(TOKEN_MARKET_FILE, market)
 
-        data = load_json(DATA_FILE)
+        data = load_json_encrypted(DATA_FILE)
         user_id_str = str(interaction.user.id)
         if user_id_str not in data:
             data[user_id_str] = {"points": 0, "xp": 0, "roles": [], "tech_roles": []}
@@ -1108,7 +1104,7 @@ class TokenSellInputModal(discord.ui.Modal, title="トークンを出品"):
         before = data[user_id_str]["points"]
         after = before + TOKEN_TRADE_PRICE
         data[user_id_str]["points"] = after
-        save_json(DATA_FILE, data)
+        save_json_encrypted(DATA_FILE, data)
         await send_value_change_notice(user_id_str, "pt", before, after, "トークン出品報酬")
 
         await interaction.followup.send(
@@ -1146,14 +1142,14 @@ class ApproveModal(discord.ui.Modal, title="✅ 承認"):
             await interaction.response.send_message("❌ TISN管理者ロールが必要です。", ephemeral=True)
             return
 
-        data = load_json(DATA_FILE)
+        data = load_json_encrypted(DATA_FILE)
         if self.target_uid not in data:
             data[self.target_uid] = {"points": 0, "xp": 0, "roles": [], "tech_roles": []}
         
         before = data[self.target_uid]["points"]
         after = before + self.pts
         data[self.target_uid]["points"] = after
-        save_json(DATA_FILE, data)
+        save_json_encrypted(DATA_FILE, data)
         mark_image_used(self.img_url, self.target_uid, self.pts, str(self.comment))
         await send_value_change_notice(self.target_uid, "pt", before, after, f"ポイント申請承認 {str(self.comment)}")
 
