@@ -54,7 +54,16 @@ TECH_ROLE_COST_XP = {
     "高度技術班": 5000,
     "技術班最高幹部": 30000
 }
-
+# ==================================================
+# ✅ 権限ロール設定（新規追加）
+# ==================================================
+PERM_ROLE_PRICES = {
+    "【権限】メッセージ管理": 30000,
+    "【権限】広報局発言権": 60000,
+    "【権限】メンバータイムアウト": 60000,
+    "【権限】キック": 100000,
+    "【権限】BAN": 300000
+}
 # ✅ 管理者が選べるXP額一覧
 XP_OPTIONS = [0, 100, 150, 200, 300, 500, 750, 1000, 2000, 5000, 10000]
 
@@ -948,7 +957,98 @@ class MainPanelView(discord.ui.View):
             f"💰 {interaction.user.mention} のポイント: **{points} pt**",
             ephemeral=True
         )
+    # ✅ ✅ 追加：権限ロール個別購入ボタン
+    @discord.ui.button(label="🔐 権限ロールを購入", style=discord.ButtonStyle.grey, custom_id="panel_buy_perm")
+    async def btn_buy_perm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        user_id = str(interaction.user.id)
+        guild = interaction.guild
+        data = load_json(DATA_FILE)
+        user_data = data.setdefault(user_id, {"points": 0, "xp": 0, "roles": [], "tech_roles": [], "perm_roles": []})
+        user_pt = user_data.get("points", 0)
 
+        # 購入可能一覧を作成
+        lines = ["📋 購入可能な権限ロール（好きなものを個別に購入できます）\n"]
+        lines.append(f"💰 所持PT: {user_pt} PT\n")
+        
+        select_opts = []
+        for role_name, price in PERM_ROLE_PRICES.items():
+            has_already = any(r.name == role_name for r in interaction.user.roles)
+            if has_already:
+                lines.append(f"✅ {role_name} — 【所持済み】")
+            else:
+                status = f"💳 {price} PT"
+                if user_pt >= price:
+                    status += " ✅ 購入可"
+                else:
+                    status += f" ❌ 不足（あと{price - user_pt}PT）"
+                lines.append(f"🔘 {role_name} — {status}")
+                select_opts.append(discord.SelectOption(label=f"{role_name} / {price}PT", value=role_name))
+
+        if not select_opts:
+            await interaction.followup.send("✅ 必要な権限はすべて所持しています！", ephemeral=True)
+            return
+
+        embed = discord.Embed(title="🔐 権限ロール購入", description="\n".join(lines), color=0x95A5A6)
+        await interaction.followup.send(embed=embed, view=PermRoleBuyView(select_opts), ephemeral=True)
+
+
+# ========== ✅ 権限ロール購入用選択画面 ==========
+class PermRoleBuyView(discord.ui.View):
+    def __init__(self, options):
+        super().__init__(timeout=180)
+        self.add_item(PermRoleSelect(options))
+
+class PermRoleSelect(discord.ui.Select):
+    def __init__(self, options):
+        super().__init__(placeholder="購入する権限ロールを選択", options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        role_name = self.values[0]
+        price = PERM_ROLE_PRICES[role_name]
+        user_id = str(interaction.user.id)
+        guild = interaction.guild
+        member = await guild.fetch_member(interaction.user.id)
+        data = load_json(DATA_FILE)
+        user_data = data.setdefault(user_id, {"points": 0, "xp": 0, "roles": [], "tech_roles": []})
+
+        # 所持確認
+        if any(r.name == role_name for r in member.roles):
+            await interaction.response.send_message(f"⚠️ すでに「{role_name}」を所持しています。", ephemeral=True)
+            return
+
+        # PT確認
+        before_pt = user_data["points"]
+        if before_pt < price:
+            await interaction.response.send_message(
+                f"⚠️ PTが不足しています。\n必要: {price} PT / 所持: {before_pt} PT\nあと{price - before_pt}PT 足りません。",
+                ephemeral=True
+            )
+            return
+
+        # 確定
+        after_pt = before_pt - price
+        user_data["points"] = after_pt
+        save_json(DATA_FILE, data)
+        await send_value_change_notice(user_id, "pt", before_pt, after_pt, f"権限ロール購入：{role_name}")
+
+        # ロール付与
+        role = discord.utils.get(guild.roles, name=role_name)
+        if role:
+            await member.add_roles(role)
+            await interaction.response.send_message(
+                f"🎉 購入完了！「{role_name}」が付与されました！\n"
+                f"💳 支払い: {price} PT\n"
+                f"💰 残高: {after_pt} PT",
+                ephemeral=True
+            )
+        else:
+            await interaction.response.send_message(
+                f"⚠️ サーバーに「{role_name}」ロールが見つかりません。\n"
+                f"管理者に作成してもらってから再度お試しください。\n"
+                f"💳 支払いは保留中です（PTは減っていません）",
+                ephemeral=True
+            )
 
 # ========== ✅ トークン出品フロー ==========
 class TokenSellConfirmView(discord.ui.View):
