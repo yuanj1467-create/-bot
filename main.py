@@ -198,7 +198,7 @@ async def edit_all_pt(ctx, amount: int, *, reason: str = "理由なし"):
         count += 1
 
     save_json(DATA_FILE, data)
-    await ctx.send(f"✅ 全{count}名のPTを {amount} に変更しました。\n📝 理由：{reason}", delete_after=15)
+    await ctx.send(f"✅ 全{count}名のPTを {amount:+d} PT に変更しました。\n📝 理由：{reason}", delete_after=15)
 
 
 # ==================================================
@@ -225,7 +225,149 @@ async def edit_all_xp(ctx, amount: int, *, reason: str = "理由なし"):
         count += 1
 
     save_json(DATA_FILE, data)
-    await ctx.send(f"✅ 全{count}名のXPを {amount} に変更しました。\n📝 理由：{reason}", delete_after=15)
+    await ctx.send(f"✅ 全{count}名のXPを {amount:+d} XP に変更しました。\n📝 理由：{reason}", delete_after=15)
+
+
+# ==================================================
+# ✅ ✅ 追加：管理者用 個別ユーザー PT操作
+# ==================================================
+@bot.command(name="edit_pt")
+async def edit_pt(ctx, member: discord.Member, amount: int, *, reason: str = "理由なし"):
+    if not is_admin(ctx.author):
+        await ctx.send("❌ TISN管理者ロールが必要です。", delete_after=5)
+        return
+
+    data = load_json(DATA_FILE)
+    user_id = str(member.id)
+    if user_id not in data:
+        data[user_id] = {"points": 0, "xp": 0, "roles": [], "tech_roles": []}
+
+    before = data[user_id].get("points", 0)
+    after = before + amount
+    data[user_id]["points"] = after
+    save_json(DATA_FILE, data)
+
+    await send_value_change_notice(user_id, "pt", before, after, reason)
+    await ctx.send(
+        f"✅ {member.mention} のPTを {before} → {after} に変更しました（{amount:+d} PT）\n"
+        f"📝 理由：{reason}",
+        delete_after=15
+    )
+
+
+# ==================================================
+# ✅ ✅ 追加：管理者用 個別ユーザー XP操作
+# ==================================================
+@bot.command(name="edit_xp")
+async def edit_xp(ctx, member: discord.Member, amount: int, *, reason: str = "理由なし"):
+    if not is_admin(ctx.author):
+        await ctx.send("❌ TISN管理者ロールが必要です。", delete_after=5)
+        return
+
+    data = load_json(DATA_FILE)
+    user_id = str(member.id)
+    if user_id not in data:
+        data[user_id] = {"points": 0, "xp": 0, "roles": [], "tech_roles": []}
+
+    before = data[user_id].get("xp", 0)
+    after = before + amount
+    data[user_id]["xp"] = after
+    save_json(DATA_FILE, data)
+
+    await send_value_change_notice(user_id, "xp", before, after, reason)
+    await ctx.send(
+        f"✅ {member.mention} のXPを {before} → {after} に変更しました（{amount:+d} XP）\n"
+        f"📝 理由：{reason}",
+        delete_after=15
+    )
+
+
+# ==================================================
+# ✅ ✅ 追加：管理者用 ロール指定 PT一括変更
+# ==================================================
+@bot.command(name="edit_pt_role")
+async def edit_pt_role(ctx, role_name: str, amount: int, *, reason: str = "理由なし"):
+    if not is_admin(ctx.author):
+        await ctx.send("❌ TISN管理者ロールが必要です。", delete_after=5)
+        return
+
+    guild = ctx.guild
+    target_role = discord.utils.get(guild.roles, name=role_name)
+    if not target_role:
+        await ctx.send(f"❌ ロール「{role_name}」が見つかりません。", delete_after=10)
+        return
+
+    data = load_json(DATA_FILE)
+    count = 0
+    for member in target_role.members:
+        user_id = str(member.id)
+        if user_id not in data:
+            data[user_id] = {"points": 0, "xp": 0, "roles": [], "tech_roles": []}
+        before = data[user_id].get("points", 0)
+        after = before + amount
+        data[user_id]["points"] = after
+        await send_value_change_notice(user_id, "pt", before, after, reason)
+        count += 1
+
+    save_json(DATA_FILE, data)
+    await ctx.send(
+        f"✅ ロール「{role_name}」のメンバー {count}名 のPTを {amount:+d} PT に変更しました。\n"
+        f"📝 理由：{reason}",
+        delete_after=15
+    )
+
+
+# ==================================================
+# ✅ ✅ 追加：管理者用 ロール指定 XP一括変更
+# ==================================================
+@bot.command(name="edit_xp_role")
+async def edit_xp_role(ctx, role_name: str, amount: int, *, reason: str = "理由なし"):
+    if not is_admin(ctx.author):
+        await ctx.send("❌ TISN管理者ロールが必要です。", delete_after=5)
+        return
+
+    guild = ctx.guild
+    target_role = discord.utils.get(guild.roles, name=role_name)
+    if not target_role:
+        await ctx.send(f"❌ ロール「{role_name}」が見つかりません。", delete_after=10)
+        return
+
+    data = load_json(DATA_FILE)
+    count = 0
+    for member in target_role.members:
+        user_id = str(member.id)
+        if user_id not in data:
+            data[user_id] = {"points": 0, "xp": 0, "roles": [], "tech_roles": []}
+        before = data[user_id].get("xp", 0)
+        after = before + amount
+        data[user_id]["xp"] = after
+        await send_value_change_notice(user_id, "xp", before, after, reason)
+        count += 1
+
+    save_json(DATA_FILE, data)
+    await ctx.send(
+        f"✅ ロール「{role_name}」のメンバー {count}名 のXPを {amount:+d} XP に変更しました。\n"
+        f"📝 理由：{reason}",
+        delete_after=15
+    )
+
+
+# ========== ✅ ✅ 追加：ログインボーナス管理 ==========
+LOGIN_BONUS_FILE = Path("login_bonus.json")
+if not LOGIN_BONUS_FILE.exists():
+    LOGIN_BONUS_FILE.write_text("{}", encoding="utf-8")
+
+def load_login_data():
+    return json.loads(LOGIN_BONUS_FILE.read_text(encoding="utf-8"))
+
+def save_login_data(data):
+    LOGIN_BONUS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+def calc_login_bonus_amount(streak_days: int) -> int:
+    """連続日数からボーナス額を計算：初日=10, 以降+5/日, 上限100"""
+    base = 10
+    bonus = base + (streak_days * 5)
+    return min(bonus, 100)
 
 
 # ========== ✅ 暗号化キー管理 ==========
@@ -512,10 +654,69 @@ class TechPromoteConfirmView(discord.ui.View):
         await interaction.response.edit_message(content="❌ 昇格をキャンセルしました。", view=None)
 
 
-# ========== ✅ メイン操作パネル（昇格ボタンに変更） ==========
+# ========== ✅ メイン操作パネル（✅ ログインボーナス追加） ==========
 class MainPanelView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
+
+    # ✅ ✅ 追加：ログインボーナスボタン
+    @discord.ui.button(label="🎁 ログインボーナス", style=discord.ButtonStyle.success, custom_id="panel_login_bonus")
+    async def btn_login_bonus(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        user_id = str(interaction.user.id)
+        today = datetime.now(JST).date().isoformat()
+        yesterday = (datetime.now(JST).date() - timedelta(days=1)).isoformat()
+
+        login_data = load_login_data()
+        user_login = login_data.setdefault(user_id, {"last_date": None, "streak": 0})
+
+        last_date = user_login.get("last_date")
+
+        # 本日すでに受取済み
+        if last_date == today:
+            await interaction.followup.send(
+                f"⚠️ 今日はすでにログインボーナスを受け取っています！\n"
+                f"📊 連続日数: {user_login['streak']} 日",
+                ephemeral=True
+            )
+            return
+
+        # 連続判定
+        if last_date == yesterday:
+            user_login["streak"] += 1
+        else:
+            user_login["streak"] = 0  # 新規 or 途切れ → リセット
+
+        streak = user_login["streak"]
+        bonus_pt = calc_login_bonus_amount(streak)
+
+        # PT付与
+        data = load_json(DATA_FILE)
+        if user_id not in data:
+            data[user_id] = {"points": 0, "xp": 0, "roles": [], "tech_roles": []}
+        before = data[user_id]["points"]
+        after = before + bonus_pt
+        data[user_id]["points"] = after
+        save_json(DATA_FILE, data)
+
+        # ログイン日更新
+        user_login["last_date"] = today
+        login_data[user_id] = user_login
+        save_login_data(login_data)
+
+        # 結果表示
+        detail_text = f"10 + {streak}×5 = {bonus_pt} PT" if streak > 0 else f"10 PT"
+        if bonus_pt >= 100:
+            detail_text += " 🎉 上限に達しました！"
+
+        await interaction.followup.send(
+            f"✅ ログインボーナスを受け取りました！\n"
+            f"💰 獲得PT: **+{bonus_pt} PT**\n"
+            f"📊 連続日数: {streak + 1} 日\n"
+            f"📋 内訳: {detail_text}\n"
+            f"💳 所持PT: {after} PT",
+            ephemeral=True
+        )
 
     @discord.ui.button(label="📩 ポイント申請", style=discord.ButtonStyle.primary, custom_id="panel_point_request")
     async def btn_request(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -603,7 +804,6 @@ class MainPanelView(discord.ui.View):
             data[user_id] = user_data
             market[token_id] = token_info
             save_json(DATA_FILE, data)
-            save_json(TOKEN_MARKET_FILE, market)
             await interaction.followup.send(
                 "❌ DMの送信に失敗しました。DMを受信できるよう設定してから再試行してください。",
                 ephemeral=True
