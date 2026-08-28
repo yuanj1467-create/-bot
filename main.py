@@ -14,10 +14,10 @@ import aiohttp
 # ✅ タイムゾーンをJSTに統一（全ての時間はこれを使う）
 # ==================================================
 JST = timezone(timedelta(hours=9))
-RANKING_CHANNEL_ID = 1540248505497686026  # 🏆 ランキング公開チャンネル　pt,xpランキングのところ
+RANKING_CHANNEL_ID = 1542491472862117899  # 🏆 ランキング公開チャンネル　pt,xpランキングのところ
 # ========== ✅ 設定 ==========
 ADMIN_ROLE_NAME = "TISN管理者"
-ADMIN_CHANNEL_ID = 1540230722013499506 #モデレーター専用部屋
+ADMIN_CHANNEL_ID = 1540618118773084204 #モデレーター専用部屋
 TOKEN_TRADE_PRICE = 250
 COMMAND_PREFIX = "!"
 # ✅ 通常階級：低い順
