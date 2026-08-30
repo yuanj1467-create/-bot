@@ -113,7 +113,7 @@ def load_json_encrypted(path):
     if not encrypted_text:
         return {}
     try:
-        decrypted = CIPHER.decrypt(encrypted_text.encode("utf-8")).decode("utf-8")
+        decrypted = CIPHER.decrypt(encrypted_text.encode("utf-8")).decode()
         return json.loads(decrypted)
     except Exception as e:
         print(f"⚠️ 復号エラー {path.name}: {e}")
@@ -678,7 +678,6 @@ class MainPanelView(discord.ui.View):
             f"💳 所持PT: {after} PT",
             ephemeral=True
         )
-
     @discord.ui.button(label="📩 ポイント申請", style=discord.ButtonStyle.primary, custom_id="panel_point_request")
     async def btn_request(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_message("✅ DMを送信しました！内容を確認してください。", ephemeral=True)
@@ -699,7 +698,6 @@ class MainPanelView(discord.ui.View):
                 "⚠️ BotからのDMを受信できるように設定してから再度お試しください。",
                 ephemeral=True
             )
-
     @discord.ui.button(label="💎 トークンを売る(pt)", style=discord.ButtonStyle.success, custom_id="panel_token_sell")
     async def btn_token_sell(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_message("✅ DMを送信しました！そちらから手続きを進めてください。", ephemeral=True)
@@ -711,7 +709,6 @@ class MainPanelView(discord.ui.View):
             await interaction.user.send(view=TokenSellConfirmView(str(interaction.user.id)))
         except Exception:
             await interaction.followup.send("⚠️ DMを受信できるよう設定してください。", ephemeral=True)
-
     @discord.ui.button(label="🛒 トークンを買う(pt)", style=discord.ButtonStyle.secondary, custom_id="panel_token_buy")
     async def btn_token_buy(self, interaction: discord.Interaction, button: discord.ui.Button):
         # ✅ 修正：期限切れ/二重応答を安全にスキップ
@@ -761,7 +758,7 @@ class MainPanelView(discord.ui.View):
             user_data["points"] += TOKEN_TRADE_PRICE
             data[user_id] = user_data
             market[token_id] = token_info
-            save_json_encrypted(DATA_FILE, market)
+            save_json(TOKEN_MARKET_FILE, market)
             await interaction.followup.send(
                 "❌ DMの送信に失敗しました。DMを受信できるよう設定してから再試行してください。",
                 ephemeral=True
@@ -781,7 +778,6 @@ class MainPanelView(discord.ui.View):
                 )
         except Exception:
             pass
-
     @discord.ui.button(label="⚡ XP申請", style=discord.ButtonStyle.blurple, custom_id="panel_xp_request")
     async def btn_xp_req(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_message("✅ DMを送信しました！手順を確認してください。", ephemeral=True)
@@ -803,21 +799,18 @@ class MainPanelView(discord.ui.View):
             save_json(TEMP_DM_FILE, temp)
         except Exception:
             await interaction.followup.send("⚠️ DMを受信できるよう設定してください。", ephemeral=True)
-
     @discord.ui.button(label="⚡ XP確認", style=discord.ButtonStyle.blurple, custom_id="panel_check_xp")
     async def btn_check_xp(self, interaction: discord.Interaction, button: discord.ui.Button):
         user_id = str(interaction.user.id)
         data = load_json_encrypted(DATA_FILE)
         xp = data.get(user_id, {}).get("xp", 0)
         await interaction.response.send_message(f"⚡ {interaction.user.mention} のXP: **{xp} xp**", ephemeral=True)
-
     @discord.ui.button(label="💰 pt確認", style=discord.ButtonStyle.primary, custom_id="panel_check_point")
     async def btn_check_point(self, interaction: discord.Interaction, button: discord.ui.Button):
         user_id = str(interaction.user.id)
         data = load_json_encrypted(DATA_FILE)
         points = data.get(user_id, {}).get("points", 0)
         await interaction.response.send_message(f"💰 {interaction.user.mention} のポイント: **{points} pt**", ephemeral=True)
-
     @discord.ui.button(label="🎖️ 階級昇格(pt)", style=discord.ButtonStyle.green, custom_id="panel_promote_rank")
     async def btn_promote_rank(self, interaction: discord.Interaction, button: discord.ui.Button):
         # ✅ 修正：期限切れ/二重応答を安全にスキップ
@@ -855,7 +848,6 @@ class MainPanelView(discord.ui.View):
             view=PromoteConfirmView(next_rank, cost_pt),
             ephemeral=True
         )
-
     @discord.ui.button(label="🔧 技術班昇格(xp)", style=discord.ButtonStyle.primary, custom_id="panel_promote_tech")
     async def btn_promote_tech(self, interaction: discord.Interaction, button: discord.ui.Button):
         # ✅ 修正：期限切れ/二重応答を安全にスキップ
@@ -893,7 +885,6 @@ class MainPanelView(discord.ui.View):
             view=TechPromoteConfirmView(next_rank, cost_xp),
             ephemeral=True
         )
-
     @discord.ui.button(label="🔐 権限ロールを購入", style=discord.ButtonStyle.grey, custom_id="panel_buy_perm")
     async def btn_buy_perm(self, interaction: discord.Interaction, button: discord.ui.Button):
         # ✅ 修正：期限切れ/二重応答を安全にスキップ
@@ -928,7 +919,6 @@ class MainPanelView(discord.ui.View):
         embed = discord.Embed(title="🔐 権限ロール購入", description="\n".join(lines), color=0x95A5A6)
         await interaction.followup.send(embed=embed, view=PermRoleBuyView(select_opts), ephemeral=True)
 
-
 # ========== ✅ トークン出品フロー ==========
 class TokenSellConfirmView(discord.ui.View):
     def __init__(self, user_id: str):
@@ -940,7 +930,6 @@ class TokenSellConfirmView(discord.ui.View):
             await interaction.response.send_message("❌ 本人だけが実行できます。", ephemeral=True)
             return
         await interaction.response.send_modal(TokenSellInputModal())
-
 
 class TokenSellInputModal(discord.ui.Modal, title="トークンを出品"):
     token_input = discord.ui.TextInput(
@@ -1000,7 +989,6 @@ class TokenSellInputModal(discord.ui.Modal, title="トークンを出品"):
                 f"🔒 トークンは暗号化済み"
             )
 
-
 # ========== ✅ 承認/拒否モーダル ==========
 class ApproveModal(discord.ui.Modal, title="✅ 承認"):
     comment = discord.ui.TextInput(label="ユーザーへのメッセージ（任意）", style=discord.TextStyle.long, required=False)
@@ -1042,7 +1030,6 @@ class ApproveModal(discord.ui.Modal, title="✅ 承認"):
         except Exception:
             pass
 
-
 class DenyModal(discord.ui.Modal, title="❌ 拒否"):
     comment = discord.ui.TextInput(label="拒否の理由（任意）", style=discord.TextStyle.long, required=False)
     def __init__(self, req_id, target_uid):
@@ -1072,7 +1059,6 @@ class DenyModal(discord.ui.Modal, title="❌ 拒否"):
         except Exception:
             pass
 
-
 # ========== ✅ 承認/拒否ボタン ==========
 class ApproveDenyView(discord.ui.View):
     def __init__(self, request_id: str, points: int, target_user_id: str, image_url: str, user_comment: str = ""):
@@ -1095,15 +1081,22 @@ class ApproveDenyView(discord.ui.View):
             return
         await interaction.response.send_modal(DenyModal(self.request_id, self.target_user_id))
 
-
-# ========== ✅ DMからのメッセージ処理 ==========
+# ========== ✅ DMからのメッセージ処理 — 二重実行バグ修正版 ==========
 @bot.event
 async def on_message(message: discord.Message):
     if message.author == bot.user:
         return
+
+    # ==============================================
+    # ✅ 【重要修正】サーバー上のコマンドは二重実行させない
+    # ==============================================
     if not isinstance(message.channel, discord.DMChannel):
-        await bot.process_commands(message)
+        # ! で始まるコマンドはBot標準の自動実行に任せてスキップ
+        if not message.content.startswith(COMMAND_PREFIX):
+            await bot.process_commands(message)
         return
+
+    # === 以降はDMメッセージ専用処理 ===
     user_id = str(message.author.id)
     temp = load_json(TEMP_DM_FILE)
     state_info = temp.get(user_id, {})
@@ -1205,14 +1198,12 @@ async def on_message(message: discord.Message):
         "`!panel` と入力するとボタン一覧が表示されます。"
     )
 
-
 # ========== ✅ メインパネル表示コマンド ==========
 @bot.command(name="panel")
 async def show_main_panel(ctx):
     await ctx.send("## 🎛️ TISN 操作パネル", view=MainPanelView())
 
-
-# ========== ✅ Bot起動 ==========
+# ========== ✅ Bot起動準備 ==========
 @bot.event
 async def on_ready():
     print(f"✅ ログイン完了: {bot.user}")
@@ -1223,7 +1214,6 @@ async def on_ready():
         daily_ranking_task.start()
         print("⏰ ランキング自動更新タスクを起動しました（毎日 0:00 JST）")
     await bot.change_presence(activity=discord.Game(name="TISN ポイント管理システム"))
-
 
 # ========== ✅ Bot起動 ==========
 if __name__ == "__main__":
